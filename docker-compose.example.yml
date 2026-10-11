@@ -1,0 +1,39 @@
+# Example compose stack for the bridge, on the SAME docker network as an
+# externally-managed, containerized Synapse (network "synapse_net" here --
+# adjust to your actual Synapse setup). If Synapse runs natively instead,
+# delete the synapse_net wiring and reach it via the host (e.g.
+# network_mode: host on Linux).
+#
+# Before starting, config.yaml needs three container-specific values:
+#   bridge.listen_host: 0.0.0.0
+#   storage.data_dir: /data
+#   bridge.internal_base_url: http://bridge:8091   (how Synapse reaches this
+#       container; written into the AppService registration)
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    environment:
+      BRIDGE_CONFIG: /config/config.yaml
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      # The bridge's bookkeeping (bridge.db: accounts, signing keys, the
+      # Matrix-event/record map). Back this volume up -- the keys in it are
+      # what every account's identity is signed with.
+      - bridge-data:/data
+    ports:
+      # Only your reverse proxy needs to reach this; bind it to localhost
+      # unless the proxy runs on another machine.
+      - "127.0.0.1:8091:8091"
+    networks:
+      - default
+      - synapse_net
+
+volumes:
+  bridge-data:
+
+networks:
+  # External: the network your existing Synapse container(s) are on.
+  # `docker network ls` shows its real name (usually "<project>_default").
+  synapse_net:
+    external: true

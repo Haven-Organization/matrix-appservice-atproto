@@ -1,0 +1,48 @@
+[Unit]
+Description=Matrix <-> ATProto Bridge
+# Adjust to your actual Synapse unit name. Remove if Synapse runs elsewhere.
+After=network-online.target matrix-synapse.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Create this user/group first, e.g.:
+#   useradd --system --home-dir /opt/matrix-appservice-atproto --shell /usr/sbin/nologin matrix-appservice-atproto
+User=matrix-appservice-atproto
+Group=matrix-appservice-atproto
+
+WorkingDirectory=/opt/matrix-appservice-atproto
+Environment=BRIDGE_CONFIG=/opt/matrix-appservice-atproto/config.yaml
+# Uses the system Python and its packages (requirements.txt, from the distro
+# repos). If you ran scripts/setup.sh, point this at the virtualenv instead:
+#   ExecStart=/opt/matrix-appservice-atproto/.venv/bin/python /opt/matrix-appservice-atproto/main.py
+ExecStart=/usr/bin/python3 /opt/matrix-appservice-atproto/main.py
+
+Restart=on-failure
+RestartSec=5s
+
+# -- Sandboxing -----------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Only the bridge's own bookkeeping (storage.data_dir in config.yaml) needs
+# to be writable -- everything else in WorkingDirectory stays read-only.
+ReadWritePaths=/opt/matrix-appservice-atproto/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

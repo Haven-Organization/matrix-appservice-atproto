@@ -1,0 +1,109 @@
+# Sample reverse-proxy config for per-user ATProto handle hostnames.
+#
+# Every local user's handle is its own hostname, <label>.example.org, and
+# ATProto verifies it by fetching https://<label>.example.org/.well-known/atproto-did.
+# One wildcard server block covers all of them.
+#
+# Assumptions:
+#   - This bridge is reachable at 127.0.0.1:8091 (bridge.listen_host/listen_port
+#     in config.yaml)
+#   - DNS has a wildcard record:   *.example.org.  A/AAAA  <this server>
+#   - You have a WILDCARD certificate for *.example.org. Let's Encrypt only
+#     issues those via the DNS-01 challenge, e.g.:
+#       certbot certonly --dns-<provider> -d '*.example.org'
+#
+# Existing subdomains are unaffected: an explicit DNS record always beats the
+# wildcard record, and nginx always prefers a server block with an exact
+# server_name (matrix.example.org, ...) over this wildcard one. Those names
+# simply never reach the bridge, which is also how the bridge notices they're
+# taken (handles.verify_routing) and refuses to hand them out as handles.
+
+upstream matrix_appservice_atproto {
+    server 127.0.0.1:8091;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name *.example.org;  # <-- *.<bridge.domain>
+
+    ssl_certificate     /etc/letsencrypt/live/example.org-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.org-0001/privkey.pem;
+
+    # "Host $host" is REQUIRED, not cosmetic: the bridge decides whose DID to
+    # return purely from the Host header. Without it nginx sends the upstream's
+    # own name and every handle fails to resolve.
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+
+    # -- ATProto: handle -> DID resolution ---------------------------------
+    location = /.well-known/atproto-did {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
+    # -- The bridge's own "does this hostname reach me?" check --------------
+    location /_bridge/handle-probe/ {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
+    # Nothing else is served on a handle hostname.
+    location / {
+        return 404;
+    }
+}
+
+# The PDS itself: ONE hostname for all accounts (bridge.public_base_url),
+# which relays and other servers talk to. An exact server_name, so it wins
+# over the wildcard block above; the same wildcard certificate covers it if
+# it sits under the same domain.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name pds.example.org;  # <-- host of bridge.public_base_url
+
+    ssl_certificate     /etc/letsencrypt/live/example.org-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.org-0001/privkey.pem;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+
+    # -- ATProto XRPC API, including the firehose WebSocket ------------------
+    # A relay keeps com.atproto.sync.subscribeRepos open indefinitely, so
+    # allow long idle periods and don't buffer.
+    location /xrpc/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
+    # -- Matrix files linked from posts (documents, audio, ...) ---------------
+    # Only media the bridge has explicitly published is served here.
+    location /media/ {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
+    # -- The PDS's own did:web document --------------------------------------
+    location = /.well-known/did.json {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
+    # Everything else stays private -- in particular /_bridge/admin.
+    location / {
+        return 404;
+    }
+}

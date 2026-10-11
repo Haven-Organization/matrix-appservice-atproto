@@ -1,0 +1,7 @@
+.git
+.venv
+__pycache__
+*.pyc
+config.yaml*
+appservice-registration.yaml*
+data
