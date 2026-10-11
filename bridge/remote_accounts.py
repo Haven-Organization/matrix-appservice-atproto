@@ -147,6 +147,22 @@ async def _mark_profile_room(app: FastAPI, ghost: str, room_id: str) -> None:
             logger.info("Could not set %s for %s", SOCIAL_PROFILE_ROOM_FIELD, ghost, exc_info=True)
 
 
+async def apply_external_handles(app: FastAPI) -> None:
+    """Give the ghost of every account with a room here its MSC4503
+    profile field, so ghosts made before the setting was turned on carry
+    it too. (Any other ghost gets it the next time it does something.)"""
+    config = app.state.config
+    if config.bridge.msc4503_external_handle not in ("profile", "both"):
+        return
+    for remote in await app.state.repository.list_remote_accounts():
+        try:
+            await app.state.synapse.set_profile_field(
+                remote.ghost_user_id, EXTERNAL_HANDLE_FIELD, external_handle_value(config, handle=remote.handle)
+            )
+        except SynapseError:
+            logger.info("Could not set %s for %s", EXTERNAL_HANDLE_FIELD, remote.ghost_user_id, exc_info=True)
+
+
 async def ensure_ghost(app: FastAPI, identity: RemoteIdentity) -> tuple[str, str, str | None, str | None, dict]:
     """Make sure the account's ghost user exists and carries its current
     name and avatar. Returns the ghost's user ID, then the label, bio,
@@ -383,6 +399,7 @@ __all__ = [
     "catch_up",
     "create_remote_room",
     "did_for_ghost",
+    "apply_external_handles",
     "ensure_ghost",
     "ensure_remote_account",
     "ghost_user_id",

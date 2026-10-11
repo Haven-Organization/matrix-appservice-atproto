@@ -93,6 +93,28 @@ async def fetch_notifications(app: FastAPI, account: Account) -> list[dict[str, 
 _TYPE_EMOJI = {"follow": "👤", "like": "👍", "repost": "🔁", "reply": "💬", "mention": "💬", "quote": "🔁"}
 
 
+async def _author_ghost(app: FastAPI, did: str) -> str | None:
+    """The Matrix user standing for whoever a notification is from: their
+    ghost, created if this is the first the bridge has seen of them
+    (someone nobody here follows), or, for a local account, its owner.
+    ``None`` if they can't be looked up."""
+    remote = await app.state.repository.get_remote_account(did)
+    if remote is not None:
+        return remote.ghost_user_id
+    account = await app.state.repository.get_account(did)
+    if account is not None:
+        return account.matrix_user_id
+    try:
+        identity = await resolve_did(app.state.http_client, did, plc_directory=app.state.config.atproto.plc_directory)
+        if identity is None:
+            return None
+        ghost, *_ = await ensure_ghost(app, identity)
+        return ghost
+    except Exception:
+        logger.info("Could not make a ghost for %s", did, exc_info=True)
+        return None
+
+
 async def build_notification(app: FastAPI, account: Account, notification: dict[str, Any]) -> dict[str, Any] | None:
     """The Matrix message for one notification, or ``None`` if it is of a
     kind that isn't reported. Formatted like
@@ -111,11 +133,11 @@ async def build_notification(app: FastAPI, account: Account, notification: dict[
     label = f"{name} (@{handle})" if name != f"@{handle}" else name
     emoji = _TYPE_EMOJI[reason]
 
-    # Whoever did it: a real Matrix pill if they have a ghost here, else a
-    # link to their profile. Either way the anchor carries their name --
+    # Whoever did it: a Matrix pill to their ghost, or, if no ghost could
+    # be made, a link to their profile. Either way the anchor carries their name --
     # an empty one would vanish from notification text.
-    ghost = await app.state.repository.get_remote_account(str(author["did"]))
-    href = f"https://matrix.to/#/{ghost.ghost_user_id}" if ghost else f"https://bsky.app/profile/{author['did']}"
+    ghost = await _author_ghost(app, str(author["did"]))
+    href = f"https://matrix.to/#/{ghost}" if ghost else f"https://bsky.app/profile/{author['did']}"
     actor_html = f'<a href="{html.escape(href, quote=True)}" title="@{html.escape(handle, quote=True)}">{html.escape(label if not ghost else name)}</a>'
 
     # The post this is about: the one they wrote, where there is one in

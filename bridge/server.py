@@ -37,6 +37,7 @@ from bridge.matrix_records import register_matrix_sources
 from bridge.notification_poller import notification_loop
 from bridge.pds import Pds, PdsError
 from bridge.record_sources import RecordSources
+from bridge.remote_accounts import apply_external_handles
 from bridge.repository import BridgeRepository
 from bridge.storage import open_repository
 from bridge.synapse_client import SynapseClient, SynapseError
@@ -233,9 +234,10 @@ def create_app(
         bridge_info_task = asyncio.create_task(refresh_all_bridge_info(app))
         chat_task = asyncio.create_task(chat_loop(app))
         declarations_task = asyncio.create_task(_ensure_chat_declarations(app))
+        external_handles_task = asyncio.create_task(apply_external_handles(app))
         tasks = (
             self_check_task, relay_task, jetstream_task, notifications_task, catch_up_task, bridge_info_task,
-            chat_task, declarations_task,
+            chat_task, declarations_task, external_handles_task,
         )
         try:
             yield
