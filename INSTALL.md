@@ -92,11 +92,10 @@ See `config.example.yaml` for every option; each is documented inline (bot name 
 **In Docker**, the same module as a one-off run with the entrypoint overridden:
 
 ```sh
-docker build -t matrix-appservice-atproto .
 docker run --rm --entrypoint python \
   -v $(pwd)/config.yaml:/config/config.yaml:ro \
   -v bridge-data:/data \
-  matrix-appservice-atproto \
+  ghcr.io/haven-organization/matrix-appservice-atproto:latest \
   -m bridge.appservice /config/config.yaml /data/appservice-registration.yaml
 ```
 
@@ -120,14 +119,14 @@ Or install `deploy/matrix-appservice-atproto.service` to run it under systemd (s
 
 The container runs as a fixed, non-root `bridge` user, UID/GID `999:999`. A named volume (like `bridge-data` here) needs nothing extra. A bind mount needs the host directory owned by that UID/GID first (`chown -R 999:999 ./data`); on a host with SELinux enforcing, also add the `:z` suffix to the mount.
 
-Standalone:
+A prebuilt multi-arch image (amd64/arm64) is published to `ghcr.io/haven-organization/matrix-appservice-atproto` on every push to `main`. Simplest form, standalone:
 
 ```sh
 docker run -d --name matrix-appservice-atproto \
   -p 127.0.0.1:8091:8091 \
   -v $(pwd)/config.yaml:/config/config.yaml:ro \
   -v bridge-data:/data \
-  matrix-appservice-atproto
+  ghcr.io/haven-organization/matrix-appservice-atproto:latest
 ```
 
 Or copy `docker-compose.example.yml` to `docker-compose.yml`, adjust it to your setup (it wires in an existing containerized Synapse via an external network; see the file's own comments), then:
@@ -135,6 +134,8 @@ Or copy `docker-compose.example.yml` to `docker-compose.yml`, adjust it to your 
 ```sh
 docker compose up -d
 ```
+
+To build from your own checkout instead of pulling the published image (e.g. to test an unreleased change), `docker build -t matrix-appservice-atproto .` and use that tag in place of the `ghcr.io/...` one above, or swap `docker-compose.example.yml`'s `image:` line for `build: .`.
 
 ## 7. Verify
 

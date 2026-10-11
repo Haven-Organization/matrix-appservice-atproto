@@ -11,7 +11,12 @@
 #       container; written into the AppService registration)
 services:
   bridge:
-    build: .
+    # Prebuilt multi-arch image (amd64/arm64), published on every push to
+    # main by .github/workflows/docker-publish.yml. Pin to a specific tag (a
+    # short git sha, or a "vX.Y.Z" release tag) instead of "latest" for
+    # anything you care about staying put. Swap this for `build: .` to build
+    # from your own local checkout.
+    image: ghcr.io/haven-organization/matrix-appservice-atproto:latest
     restart: unless-stopped
     environment:
       BRIDGE_CONFIG: /config/config.yaml
