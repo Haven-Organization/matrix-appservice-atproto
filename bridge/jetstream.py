@@ -46,6 +46,8 @@ LIKE_COLLECTION = "app.bsky.feed.like"
 _CURSOR_KEY = "jetstream_cursor"
 _RECONNECT_DELAY = 5.0
 _MAX_RECONNECT_DELAY = 120.0
+# A connection that held at least this long counts as having worked.
+_STABLE_CONNECTION = 60.0
 # On reconnect, step back a little so nothing in flight at the moment of
 # disconnection is missed.
 _CURSOR_REWIND_US = 5_000_000
@@ -153,6 +155,8 @@ class JetstreamConsumer:
         self._app = app
         self._url = url
         self._changed = asyncio.Event()
+        self._connected_at: float | None = None
+        self._events = 0
 
     def refresh(self) -> None:
         """Call when the set of followed accounts changes."""
@@ -169,19 +173,33 @@ class JetstreamConsumer:
                 await self._changed.wait()
                 self._changed.clear()
                 continue
+            self._connected_at = None
+            self._events = 0
             try:
                 await self._consume(accounts)
                 delay = _RECONNECT_DELAY
             except asyncio.CancelledError:
                 raise
-            except websockets.ConnectionClosed:
-                # Routine: the feed drops connections now and then. The
-                # saved position (and the catch-up check) covers the gap.
-                logger.info("Jetstream connection closed; reconnecting in %.0fs", delay)
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, _MAX_RECONNECT_DELAY)
             except Exception as exc:
-                logger.warning("Jetstream connection lost (%r); reconnecting in %.0fs", exc, delay)
+                lasted = time.monotonic() - self._connected_at if self._connected_at is not None else None
+                # The wait only grows while connections keep failing right
+                # away. One that held for a while was a healthy connection
+                # that happened to end, so start over from the short wait.
+                if lasted is not None and lasted >= _STABLE_CONNECTION:
+                    delay = _RECONNECT_DELAY
+                if isinstance(exc, websockets.ConnectionClosed) and lasted is not None:
+                    # Routine: the feed drops connections now and then. The
+                    # saved position (and the catch-up check) covers the gap.
+                    # How long it held, and how the server ended it, are
+                    # logged to tell an occasional drop from a pattern.
+                    close = exc.rcvd
+                    how = f"close code {close.code} {close.reason!r}" if close is not None else "no close frame"
+                    logger.info(
+                        "Jetstream connection closed after %.0fs and %d event(s) (%s); reconnecting in %.0fs",
+                        lasted, self._events, how, delay,
+                    )
+                else:
+                    logger.warning("Jetstream connection failed (%r); reconnecting in %.0fs", exc, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY)
 
@@ -214,6 +232,7 @@ class JetstreamConsumer:
         async with websockets.connect(url, max_size=2_000_000) as socket:
             await self._send_options(socket, accounts)
             logger.info("Jetstream connected, watching %d account(s)", len(accounts))
+            self._connected_at = time.monotonic()
             receive: asyncio.Task | None = None
             changed: asyncio.Task | None = None
             try:
@@ -236,6 +255,7 @@ class JetstreamConsumer:
                     if receive.done():
                         message = receive.result()
                         receive = None
+                        self._events += 1
                         try:
                             event = json.loads(message)
                         except ValueError:
