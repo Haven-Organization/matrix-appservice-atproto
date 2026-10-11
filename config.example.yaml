@@ -11,6 +11,13 @@ bridge:
   # Domain local users' ATProto handles live directly under: the Matrix user
   # @alice:example.org gets the handle alice.example.org. Needs a wildcard DNS
   # record and TLS certificate for *.<domain> -- see INSTALL.md.
+  #
+  # It doesn't have to be your homeserver's own domain. To keep handles out of
+  # the way of your other subdomains, put them one level down, e.g.
+  # "at.example.org" -> alice.at.example.org. The wildcard record and
+  # certificate must then be for *.at.example.org (a *.example.org certificate
+  # doesn't cover it). Choose before creating accounts: existing accounts keep
+  # the handle they were created with.
   domain: example.org
 
   # Address of the bridge's own PDS: one hostname for everyone, separate from

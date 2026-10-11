@@ -13,6 +13,7 @@ Setting the bridge up, natively or in Docker. Because every user's handle is its
 - [6. Run the bridge](#6-run-the-bridge)
 - [7. Verify](#7-verify)
 - [Handles](#handles)
+  - [Handles under their own subdomain](#handles-under-their-own-subdomain)
 - [Things to know before going live](#things-to-know-before-going-live)
 
 ## Requirements
@@ -74,7 +75,7 @@ This creates a virtualenv, installs `requirements.txt`, and generates `config.ya
 
 Then edit `config.yaml`. At minimum set:
 
-- `bridge.domain`: the domain handles live under (`example.org`).
+- `bridge.domain`: the domain handles live under (`example.org`, or a subdomain of it: see [Handles under their own subdomain](#handles-under-their-own-subdomain)).
 - `bridge.public_base_url`: the PDS address from step 1 (`https://pds.example.org`). **Choose this before creating any account.** It is written into every account's public identity record.
 - `synapse.base_url` and `synapse.server_name`: your homeserver.
 - `handles.reserved`: subdomains you use or plan to use, so nobody can claim them as a handle.
@@ -170,6 +171,28 @@ A user's handle is `<their Matrix username>.<bridge.domain>`. Because that is a 
 1. A built-in list of names any site is likely to care about (`www`, `mail`, `admin`, `login`, `api`, `matrix`, ...).
 2. `handles.reserved` in `config.yaml`: your site's own subdomains, as exact labels or globs.
 3. A live check that the hostname really reaches this bridge and not some other service (`handles.verify_routing`), which catches any subdomain that already exists.
+
+### Handles under their own subdomain
+
+Handles don't have to sit directly under your main domain. `bridge.domain` is separate from the homeserver's name (`synapse.server_name`), so you can put handles one level down and keep them out of the way of your other subdomains entirely:
+
+```yaml
+bridge:
+  domain: at.example.org        # @alice:example.org -> alice.at.example.org
+  public_base_url: https://pds.example.org
+synapse:
+  server_name: example.org
+```
+
+Everything in steps 1 to 3 then applies to that name instead:
+
+- **DNS:** the wildcard record is `*.at.example.org`.
+- **Certificate:** it must be for `*.at.example.org`. A `*.example.org` certificate does not cover it, because a wildcard matches exactly one level.
+- **nginx:** the wildcard block's `server_name` is `*.at.example.org`.
+
+The PDS address (`bridge.public_base_url`) is unaffected and can stay wherever you like.
+
+Decide this before creating accounts. Changing `bridge.domain` later only affects accounts created afterwards; existing ones keep the handle they have.
 
 ## Things to know before going live
 
