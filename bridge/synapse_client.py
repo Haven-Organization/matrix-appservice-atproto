@@ -176,10 +176,13 @@ class SynapseClient:
         result = await self._request("POST", "/_matrix/client/v3/createRoom", json_body=body, as_user_id=as_user_id)
         return result["room_id"]
 
-    async def invite_user(self, room_id: str, user_id: str, *, as_user_id: str) -> None:
-        await self._request(
-            "POST", f"/_matrix/client/v3/rooms/{room_id}/invite", json_body={"user_id": user_id}, as_user_id=as_user_id
-        )
+    async def invite_user(self, room_id: str, user_id: str, *, as_user_id: str, is_direct: bool = False) -> None:
+        """``is_direct`` marks the invite as one to a direct message, which
+        is what makes the invitee's client file the room as a DM."""
+        body: dict[str, Any] = {"user_id": user_id}
+        if is_direct:
+            body["is_direct"] = True
+        await self._request("POST", f"/_matrix/client/v3/rooms/{room_id}/invite", json_body=body, as_user_id=as_user_id)
 
     async def join_room(self, room_id: str, *, as_user_id: str) -> None:
         await self._request("POST", f"/_matrix/client/v3/join/{room_id}", as_user_id=as_user_id)

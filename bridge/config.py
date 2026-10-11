@@ -84,6 +84,12 @@ class BridgeSection:
     # shows as the user's own action rather than the bot's. Additive, and
     # ignored by clients that don't know MSC4144; on by default.
     msc4144_per_message_profiles: bool = True
+    # Create chat rooms as Matrix direct messages (``is_direct``), so
+    # clients file them under "People" with the other account. Off by
+    # default: a chat room is then an ordinary room. Only turn on where
+    # direct messages aren't end-to-end encrypted by default -- the bridge
+    # can't read an encrypted room.
+    chat_rooms_as_dms: bool = False
     # Set org.matrix.msc4501.social.profile_room on every ghost's Matrix
     # profile. Needs MSC4133 (Extensible Profiles) enabled on the
     # homeserver -- in Synapse, experimental_features.msc4133_enabled --
@@ -289,6 +295,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
         use_msc4501_content_inline=bool(bridge_raw.get("use_msc4501_content_inline", True)),
         quote_import_policy=quote_import_policy,
         msc4144_per_message_profiles=bool(bridge_raw.get("msc4144_per_message_profiles", True)),
+        chat_rooms_as_dms=bool(bridge_raw.get("chat_rooms_as_dms", False)),
         set_msc4501_profile_room=bool(bridge_raw.get("set_msc4501_profile_room", False)),
         msc4503_external_handle=msc4503_external_handle,
     )

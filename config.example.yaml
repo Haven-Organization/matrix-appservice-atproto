@@ -1,194 +1,84 @@
 # Matrix <-> ATProto bridge configuration.
 #
-# Copy this file to config.yaml and fill in real values. Secrets (tokens) should
-# never be committed to version control.
+# Copy this file to config.yaml and fill in real values. Secrets (tokens)
+# should never be committed to version control.
+#
+# This file only holds what you need to get going. Every other setting has a
+# sensible default and is documented in CONFIG.md -- add one here, under the
+# section CONFIG.md lists it in, only if you want to change it.
 
 bridge:
   # Domain local users' ATProto handles live directly under: the Matrix user
-  # @alice:example.org gets the handle alice.example.org. Requires a wildcard
-  # DNS record and TLS certificate for *.<domain> routed to this bridge -- see
-  # deploy/nginx.conf.example.
+  # @alice:example.org gets the handle alice.example.org. Needs a wildcard DNS
+  # record and TLS certificate for *.<domain> -- see INSTALL.md.
   domain: example.org
 
-  # Base URL of the bridge's own PDS endpoint: one hostname for everyone,
-  # separate from the per-user handle hostnames above. Any hostname you
-  # control works -- it doesn't have to be "pds" or even under `domain`. If
-  # it does sit under `domain`, its label ("pds" here) is automatically
-  # unavailable as a handle.
-  #
-  # Choose before creating accounts: this URL is written into every account's
-  # public identity record. Changing it later leaves existing accounts
-  # pointing at the old address (the bridge warns about each at startup).
+  # Address of the bridge's own PDS: one hostname for everyone, separate from
+  # the per-user handle hostnames. Choose before creating accounts: it is
+  # written into every account's public identity record.
   public_base_url: https://pds.example.org
 
   # Host/port the bridge's own HTTP server binds to.
   listen_host: 127.0.0.1
   listen_port: 8091
 
-  # Enables the operator endpoints under /_bridge/admin (create an account,
-  # write test records, request a relay crawl) and is the bearer token they
-  # require. Leave unset to disable them. Never expose /_bridge/ publicly.
-  # admin_token: "replace_me"
-
-  # Address Synapse should push AppService transactions to. Only set this if
-  # Synapse can't reach the bridge at http://<listen_host>:<listen_port>.
-  # internal_base_url: http://127.0.0.1:8091
-
-  # Bridge admins: may choose a custom ";backfill"-style count and replace
-  # rooms that aren't their own. Synapse server admins count as well if
-  # synapse.admin_token is set.
-  # admins:
-  #   - "@you:example.org"
-
-  # Each user gets a personal space holding their Profile Room, their
-  # notifications room and the rooms of the accounts they follow, and a
-  # notifications room. Name and avatar (an mxc:// URI) of both are set here.
-  # With no avatar, the bot's own (appservice.bot_avatar_mxc) is used.
-  # space_name: "AT Proto"
+  # Each user gets a personal space (their Profile Room, their notifications
+  # room, and the rooms of accounts they follow) and a notifications room.
+  # Avatars are mxc:// URIs; left unset, the bot's avatar is used.
+  space_name: "AT Proto"
   # space_avatar_mxc: "mxc://example.org/abcdef"
-  # notifications_room_name: "AT Proto Notifications"
+  notifications_room_name: "AT Proto Notifications"
   # notifications_room_avatar_mxc: "mxc://example.org/abcdef"
 
-  # -- MSC4501 ("Rooms as Social Media Pages") and related proposals --------
-  # Same settings and defaults as matrix-appservice-activitypub.
-
-  # Mirror remote accounts' posts as org.matrix.msc4501.social.post events
-  # instead of m.room.message. Off by default, and not recommended yet: a
-  # client that doesn't know this event type shows nothing at all.
-  # use_msc4501_post_event_type: false
-
-  # Add org.matrix.msc4501.social.relates_to to mirrored replies and
-  # quote-posts. Additive on an ordinary message, so on by default.
-  # set_msc4501_relates_to: true
-
-  # A mirrored repost says its own content IS the reposted post
-  # (content_inline) instead of repeating that content inside the relation.
-  # use_msc4501_content_inline: true
-
-  # When a quote-post quotes something not yet in Matrix, import it so the
-  # quote can link to a real event?  known (default: only if its author
-  # already has a room here) | always | never
-  # quote_import_policy: known
-
-  # Show the "you reposted" card the bot posts in a user's Profile Room as
-  # that user's own (MSC4144 per-message profile). On by default.
-  # msc4144_per_message_profiles: true
-
-  # Point each ghost's Matrix profile at its room
-  # (org.matrix.msc4501.social.profile_room). Needs MSC4133 on the homeserver
-  # (Synapse: experimental_features.msc4133_enabled: true), so off by default.
-  # set_msc4501_profile_room: false
-
-  # Record each ghost's real Bluesky handle (MSC4503):
-  #   off (default) | profile (needs MSC4133) | events | both
-  # msc4503_external_handle: "off"
-
 synapse:
-  # Synapse Client-Server API base URL, as reachable from the bridge process.
+  # Client-Server API base URL of your homeserver, as reachable from the
+  # bridge process.
   base_url: http://127.0.0.1:8008
   # The homeserver's server_name (the part after the colon in @user:server.name).
   server_name: example.org
-  # Optional: a Synapse admin access token, used only to ask whether a user
-  # is a server admin (see bridge.admins).
-  # admin_token: "syt_..."
 
 appservice:
-  # Where `python -m bridge.appservice` writes the registration file that
-  # Synapse's homeserver.yaml must list under app_service_config_files.
+  # Where `python -m bridge.appservice` writes the registration file your
+  # homeserver must load (app_service_config_files in Synapse).
   registration_path: ./appservice-registration.yaml
   id: matrix-atproto-bridge
-  # Generate each with: python -c 'import secrets; print(secrets.token_hex(32))'
+  # scripts/setup.sh fills these in. To generate one by hand:
+  #   python3 -c 'import secrets; print(secrets.token_hex(32))'
   hs_token: "hs_replace_me"
   as_token: "as_replace_me"
 
   # The bridge's bot account, @<bot_localpart>:<server_name>. Users invite it
-  # to a chat to set up their Bluesky identity. Must not be an existing user.
+  # to a room to set up their identity. Must not be an existing user.
   bot_localpart: bluesky
-  # bot_display_name: "Bluesky Bridge"
-  # bot_avatar_mxc must be an mxc:// URI, not a file path or http(s) URL.
+  bot_display_name: "Bluesky Bridge"
+  # An mxc:// URI, not a file path or http(s) URL.
   # bot_avatar_mxc: "mxc://example.org/abcdef"
 
   # Localpart prefix for ghosts of remote ATProto accounts,
-  # e.g. "at_" -> @at_<account id>:example.org. Choose before anyone follows
-  # an account: changing it later orphans the existing ghosts, and the
-  # registration file must be regenerated and Synapse restarted.
+  # e.g. "at_" -> @at_<account id>:example.org.
+  # DECIDE NOW: changing it later orphans the existing ghosts, and the
+  # registration file must be regenerated and the homeserver restarted.
   user_prefix: "at_"
 
-  # Commands are given by tagging the bot ("@bluesky:example.org create
-  # profile") or by starting a message with this prefix ("]create profile").
-  # Use something no other bot in your rooms answers to -- e.g.
-  # matrix-appservice-activitypub uses ";".
-  # command_prefix: "]"
+  # Commands are given by tagging the bot or by starting a message with this
+  # prefix ("]create profile"). Use something no other bot in your rooms
+  # answers to -- matrix-appservice-activitypub uses ";".
+  command_prefix: "]"
 
 storage:
-  # Where the bridge's own bookkeeping (bridge.db) is kept.
+  # Where the bridge's own bookkeeping (bridge.db) is kept. Back it up: it
+  # holds the signing keys every account's identity depends on.
   data_dir: ./data
 
-# Which <label>.<domain> hostnames users may NOT get as a handle. Three layers
-# apply, all of them before anyone is granted a name:
-#   1. A built-in list of names any site is likely to care about (www, mail,
-#      admin, login, api, matrix, ...): bridge/atproto/reserved_handles.py.
-#   2. `reserved` below: this site's own subdomains.
-#   3. A live check that the hostname really reaches this bridge and not some
-#      other service (`verify_routing`).
 handles:
-  # Subdomains of `domain` that are in use, or that you want kept free. Exact
-  # labels or shell-style globs. Hyphens are ignored when matching, so "wiki"
-  # also blocks "wi-ki". Layer 3 already catches subdomains that are live
-  # right now; this is for ones you plan to use but haven't set up yet, and
-  # for not depending on that check alone.
+  # Subdomains of `domain` that are in use, or that you want kept free, so
+  # nobody can claim them as a handle. Exact labels or shell-style globs.
+  # (Common names like www, mail and admin are already blocked, and a
+  # subdomain that is live right now is detected automatically.)
   reserved: []
   #  - wiki
   #  - git
   #  - "node*"
-
-  # Names from the built-in list you're fine handing out anyway.
-  allowed: []
-  #  - talk
-
-  # Layer 3. Leave on in production. Turn off only where the bridge can't
-  # reach its own public hostnames (local development).
-  # verify_routing: true
-
-atproto:
-  # The did:plc directory new accounts are registered with. Leave as is unless
-  # you are testing against a private directory.
-  # plc_directory: https://plc.directory
-
-  # Relays asked to crawl this PDS. bsky.network is Bluesky's.
-  # relays:
-  #   - https://bsky.network
-
-  # Where followed accounts' new posts come from (a Jetstream endpoint).
-  # jetstream_url: wss://jetstream2.us-east.bsky.network/subscribe
-
-  # Recent posts mirrored when an account is first followed.
-  # follow_backfill_count: 15
-
-  # The live feed can lag or miss something. Every this many minutes each
-  # followed account is asked directly for anything newer than the last post
-  # mirrored (and, every twelfth time, for its current profile). 0 turns the
-  # check off.
-  # catchup_minutes: 5
-
-  # Largest remote image/video copied into Matrix, in MB; bigger ones are
-  # linked instead. Keep at or below Synapse's max_upload_size.
-  # max_media_mb: 50
-
-  # Notifications (new followers, likes, reposts, replies, mentions, quotes)
-  # are read from this AppView on each account's behalf, this often. Set
-  # notification_poll_seconds to 0 to turn them off.
-  # appview_url: https://api.bsky.app
-  # appview_did: did:web:api.bsky.app
-  # notification_poll_seconds: 30
-
-  # Bluesky chat (direct messages). Checked this often per account; 0 turns
-  # chat off. chat_allow_incoming says who may start a chat with a local
-  # account: all | following (Bluesky's default) | none.
-  # chat_url: https://api.bsky.chat
-  # chat_did: did:web:api.bsky.chat
-  # chat_poll_seconds: 10
-  # chat_allow_incoming: following
 
 logging:
   level: INFO

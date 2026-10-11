@@ -34,7 +34,6 @@ from fastapi import FastAPI, Request
 from bridge.atproto.identity import RemoteIdentity, post_url, resolve_did
 from bridge.atproto.keys import SigningKey
 from bridge.atproto.service_auth import service_auth_token
-from bridge.follows import invite_to_room
 from bridge.matrix_records import MEDIA_MSGTYPES, _link_facets, media_filename, message_body, split_text
 from bridge.post_mirroring import render_text
 from bridge.ghost_ids import did_for_ghost, ghost_user_id
@@ -116,18 +115,21 @@ async def ensure_chat_room(
     if existing is not None and not replace:
         if existing.convo_id != convo_id:
             await repository.save_chat_room(ChatRoom(existing.room_id, account.did, identity.did, convo_id))
-        await invite_to_room(app, existing.room_id, account.matrix_user_id)
+        await _reinvite(app, existing.room_id, account.matrix_user_id, ghost_user_id(app, identity.did))
         return existing.room_id
     ghost, _label, _description, avatar_mxc, _profile = await ensure_ghost(app, identity)
     bot = _bot(app)
-    # Created by the ghost, as a direct chat with the user: that is what
-    # makes clients file it as a DM with that person. The bot is invited
-    # so it can speak in the room (errors, command replies).
+    # Created by the ghost, with the user invited as part of creating it.
+    # With bridge.chat_rooms_as_dms that invite is a direct-message one,
+    # which is what makes clients file the room as a DM with that person
+    # (nobody else may invite the user after: a later invite replaces
+    # this one and loses the flag). The bot is invited so it can speak in
+    # the room (errors, command replies).
     room_id = await synapse.create_room(
         as_user_id=ghost,
         name=f"{identity.handle} (Chat)",
         invite=[account.matrix_user_id, bot],
-        is_direct=True,
+        is_direct=app.state.config.bridge.chat_rooms_as_dms,
         preset="trusted_private_chat",
         avatar_mxc=avatar_mxc,
         predecessor=predecessor,
@@ -137,6 +139,26 @@ async def ensure_chat_room(
     await add_room_to_space(app, account.matrix_user_id, room_id)
     logger.info("Created chat room %s for %s with %s", room_id, account.matrix_user_id, identity.handle)
     return room_id
+
+
+async def _reinvite(app: FastAPI, room_id: str, user_id: str, ghost: str) -> None:
+    """Invite the chat's owner back into its room if they've left it. An
+    invite still pending is left alone: inviting again would replace it,
+    and with it the direct-message flag it may carry."""
+    synapse = app.state.synapse
+    bot = _bot(app)
+    try:
+        member = await synapse.get_room_state(room_id, "m.room.member", user_id, as_user_id=bot)
+        if (member or {}).get("membership") in ("join", "invite"):
+            return
+        direct = app.state.config.bridge.chat_rooms_as_dms
+        try:
+            await synapse.invite_user(room_id, user_id, as_user_id=ghost, is_direct=direct)
+        except SynapseError:
+            # The ghost can't (it left, say); the bot can, though not as a DM.
+            await synapse.invite_user(room_id, user_id, as_user_id=bot)
+    except SynapseError as exc:
+        logger.info("Invite of %s to %s: %s", user_id, room_id, exc)
 
 
 async def start_chat(app: FastAPI, account: Account, identity: RemoteIdentity) -> str:

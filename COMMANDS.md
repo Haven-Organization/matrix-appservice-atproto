@@ -153,7 +153,7 @@ Following and everyday commands.
 
 **Syntax:** `]chat handle.example.com` or `]dm handle.example.com` (the same command: Bluesky has one kind of direct message, which it calls Chat). With no argument inside an account's Remote User Room, chats with that account.
 
-**What it does:** Starts, or reuses (re-inviting you if you'd left), a direct-message room for your Bluesky chat with that account, named "<handle> (Chat)". Messages you send there are delivered as chat messages; the other person's replies appear from their ghost user.
+**What it does:** Starts, or reuses (re-inviting you if you'd left), a room for your Bluesky chat with that account, named "<handle> (Chat)". It is an ordinary room by default; the host can have chat rooms created as Matrix direct messages instead (`bridge.chat_rooms_as_dms`, see [CONFIG.md](CONFIG.md#bridgechat_rooms_as_dms)). Messages you send there are delivered as chat messages; the other person's replies appear from their ghost user.
 
 **Who can run it:** Requires an identity. Refuses if the handle belongs to a user of this bridge; just start an ordinary Matrix DM with them.
 

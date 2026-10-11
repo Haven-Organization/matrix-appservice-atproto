@@ -43,6 +43,8 @@ Synapse is the only homeserver this bridge has been tested against. It should wo
 
 See [INSTALL.md](INSTALL.md) for the full walkthrough, natively or in Docker. In short: ATProto handles are hostnames, so each user's handle is its own subdomain (`alice.example.org`). That means a wildcard DNS record, a wildcard TLS certificate and two nginx server blocks (`deploy/nginx.conf.example`) come first, then `./scripts/setup.sh` (or the `Dockerfile`), `config.yaml` (from `config.example.yaml`), and registering the AppService with your homeserver.
 
+`config.example.yaml` only has the settings you need to start. Every other setting is documented in [CONFIG.md](CONFIG.md).
+
 ## Storage
 
 Bookkeeping (accounts and their keys, handle claims, follow relationships, ghost profiles, the Matrix-event/ATProto-record map, and the PDS's event log) lives in a local SQLite file, `bridge.db` under `storage.data_dir`. No post content or media is stored outside Matrix itself.

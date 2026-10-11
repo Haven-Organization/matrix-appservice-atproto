@@ -79,7 +79,7 @@ Then edit `config.yaml`. At minimum set:
 - `synapse.base_url` and `synapse.server_name`: your homeserver.
 - `handles.reserved`: subdomains you use or plan to use, so nobody can claim them as a handle.
 
-See `config.example.yaml` for every option; each is documented inline (bot name and avatar, command prefix, ghost prefix, space and notifications room names, MSC4501 behaviour, chat, backfill defaults, and more).
+`config.example.yaml` documents each of its settings inline (bot name and avatar, command prefix, ghost prefix, space and notifications room names). It is deliberately short: everything else has a default, and [CONFIG.md](CONFIG.md) is the full reference (MSC4501 behaviour, chat, backfill defaults, admins, and more).
 
 ## 5. Register the AppService with your homeserver
 
