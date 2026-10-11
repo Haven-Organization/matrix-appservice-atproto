@@ -141,8 +141,37 @@ class AppserviceSection:
 
 
 @dataclass(frozen=True)
+class PostgresSection:
+    # A full connection string (postgresql://user:pass@host:port/dbname).
+    # Wins over the discrete fields below if both are given.
+    dsn: str | None = None
+    host: str = "localhost"
+    port: int = 5432
+    database: str = "matrix_appservice_atproto"
+    user: str = "matrix_appservice_atproto"
+    password: str | None = None
+
+    def resolved_dsn(self) -> str:
+        if self.dsn:
+            return self.dsn
+        # libpq keyword/value form: no URL-escaping of the password needed.
+        def quoted(value: object) -> str:
+            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+            return f"'{escaped}'"
+
+        parts = {"host": self.host, "port": self.port, "dbname": self.database, "user": self.user}
+        if self.password:
+            parts["password"] = self.password
+        return " ".join(f"{key}={quoted(value)}" for key, value in parts.items())
+
+
+@dataclass(frozen=True)
 class StorageSection:
+    # "sqlite" (default: a single file, bridge.db, under data_dir) or
+    # "postgresql" (the server described by `postgres`).
+    backend: str = "sqlite"
     data_dir: str = "./data"
+    postgres: PostgresSection = field(default_factory=PostgresSection)
 
 
 @dataclass(frozen=True)
@@ -322,7 +351,21 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
     )
 
     storage_raw = raw.get("storage", {}) or {}
-    storage_section = StorageSection(data_dir=storage_raw.get("data_dir", "./data"))
+    backend = str(storage_raw.get("backend", "sqlite"))
+    if backend not in ("sqlite", "postgresql"):
+        raise ConfigError(f"storage.backend must be 'sqlite' or 'postgresql', got {backend!r}")
+    postgres_raw = storage_raw.get("postgres", {}) or {}
+    postgres_section = PostgresSection(
+        dsn=postgres_raw.get("dsn") or None,
+        host=str(postgres_raw.get("host", "localhost")),
+        port=int(postgres_raw.get("port", 5432)),
+        database=str(postgres_raw.get("database", "matrix_appservice_atproto")),
+        user=str(postgres_raw.get("user", "matrix_appservice_atproto")),
+        password=str(postgres_raw["password"]) if postgres_raw.get("password") not in (None, "") else None,
+    )
+    storage_section = StorageSection(
+        backend=backend, data_dir=storage_raw.get("data_dir", "./data"), postgres=postgres_section
+    )
 
     handles_raw = raw.get("handles", {}) or {}
     handles_section = HandlesSection(

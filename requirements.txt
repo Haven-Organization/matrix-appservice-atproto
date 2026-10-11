@@ -5,3 +5,5 @@ PyYAML>=6.0,<7.0
 cryptography>=42.0
 Pillow>=10.0
 websockets>=12.0
+# Only used with storage.backend: postgresql.
+psycopg2-binary>=2.9.10

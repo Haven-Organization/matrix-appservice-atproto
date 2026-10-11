@@ -15,7 +15,6 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
@@ -39,7 +38,7 @@ from bridge.notification_poller import notification_loop
 from bridge.pds import Pds, PdsError
 from bridge.record_sources import RecordSources
 from bridge.repository import BridgeRepository
-from bridge.sqlite_repository import SqliteBridgeRepository
+from bridge.storage import open_repository
 from bridge.synapse_client import SynapseClient, SynapseError
 
 logger = logging.getLogger(__name__)
@@ -160,8 +159,9 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI app.
 
-    ``repository`` defaults to ``SqliteBridgeRepository`` persisted at
-    ``{storage.data_dir}/bridge.db``. Pass an alternative implementation
+    ``repository`` defaults to the one ``storage.backend`` selects (see
+    ``bridge.storage.open_repository``): by default a
+    ``SqliteBridgeRepository`` at ``{storage.data_dir}/bridge.db``. Pass an alternative implementation
     (e.g. ``SqliteBridgeRepository(":memory:")``) for tests, and likewise a
     ``synapse`` client pointed at a stand-in homeserver.
     """
@@ -170,7 +170,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.config = config
-        app.state.repository = repository or SqliteBridgeRepository(Path(config.storage.data_dir) / "bridge.db")
+        app.state.repository = repository or open_repository(config)
 
         http_client = httpx.AsyncClient(timeout=15.0)
         app.state.http_client = http_client

@@ -73,8 +73,13 @@ appservice:
   command_prefix: "]"
 
 storage:
-  # Where the bridge's own bookkeeping (bridge.db) is kept. Back it up: it
-  # holds the signing keys every account's identity depends on.
+  # "sqlite" (default): a single file, bridge.db, under data_dir. No setup.
+  # "postgresql": a Postgres server instead, e.g. the one your homeserver
+  # already uses -- see CONFIG.md for its settings and for moving an
+  # existing SQLite database over.
+  backend: sqlite
+  # Back this up, whichever backend: it holds the signing keys every
+  # account's identity depends on.
   data_dir: ./data
 
 handles:

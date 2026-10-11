@@ -34,8 +34,30 @@ services:
       - default
       - synapse_net
 
+  # Optional: Postgres for the bridge's bookkeeping instead of the default
+  # SQLite file. Uncomment this service and the volume below, change the
+  # password, and in config.yaml set
+  #   storage: {backend: postgresql, postgres: {host: postgres, password: ...}}
+  # (The bridge waits up to a minute for the database at startup.)
+  #
+  # postgres:
+  #   image: postgres:17-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: matrix_appservice_atproto
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: matrix_appservice_atproto
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U matrix_appservice_atproto"]
+  #     interval: 2s
+  #     timeout: 5s
+  #     retries: 10
+
 volumes:
   bridge-data:
+  # postgres-data:
 
 networks:
   # External: the network your existing Synapse container(s) are on.

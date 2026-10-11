@@ -125,7 +125,7 @@ Or install `deploy/matrix-appservice-atproto.service` to run it under systemd (s
 **In Docker:** the `Dockerfile` runs the exact same code. Three settings in `config.yaml` need a container-specific value first:
 
 - `bridge.listen_host` must be `0.0.0.0`, not the native default `127.0.0.1`. Otherwise nothing outside the container can reach it, even with the port published.
-- `storage.data_dir` must be `/data` (not the native default `./data`). That's the volume the image creates and can write to as its non-root user.
+- With the default SQLite storage, `storage.data_dir` must be `/data` (not the native default `./data`). That's the volume the image creates and can write to as its non-root user.
 - `bridge.internal_base_url` must be an address your homeserver can reach the container at (for example `http://bridge:8091` on a shared Docker network). It is written into the registration file, so set it before step 5.
 
 The container runs as a fixed, non-root `bridge` user, UID/GID `999:999`. A named volume (like `bridge-data` here) needs nothing extra. A bind mount needs the host directory owned by that UID/GID first (`chown -R 999:999 ./data`); on a host with SELinux enforcing, also add the `:z` suffix to the mount.
@@ -197,4 +197,4 @@ Decide this before creating accounts. Changing `bridge.domain` later only affect
 ## Things to know before going live
 
 - **Creating an account is public and permanent.** Each account gets a DID registered with the public PLC directory. `]delete profile` retires it for good, but the public record that it existed stays.
-- **Back up `data/bridge.db`.** It holds the signing keys every account's identity depends on. Posts can be regenerated from Matrix; the keys can't.
+- **Back up `data/bridge.db`** (or the Postgres database, if you use that backend). It holds the signing keys every account's identity depends on. Posts can be regenerated from Matrix; the keys can't.

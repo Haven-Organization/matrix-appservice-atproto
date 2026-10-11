@@ -2,7 +2,7 @@
 
 Turns your Matrix server into an AT Protocol (Bluesky) server. Every Matrix user can have a real ATProto account, hosted by the bridge itself, and post, follow, reply, like, repost and chat across Bluesky using ordinary Matrix rooms and clients. No separate account or server needed.
 
-Runs natively as a single Python process, no containers required (a `Dockerfile` is provided if you prefer one). It talks to your homeserver through the Client-Server API (plus the Application Service push API for inbound events), never by touching its database directly. The bridge is its own PDS (Personal Data Server), the piece of ATProto that hosts accounts, but it stores no post content or media of its own: that all lives in Matrix rooms, and each account's repository is regenerated from them on demand. The only local state is bookkeeping (accounts and their signing keys, follow relationships, and the Matrix-event/ATProto-record map), kept in a SQLite file.
+Runs natively as a single Python process, no containers required (a `Dockerfile` is provided if you prefer one). It talks to your homeserver through the Client-Server API (plus the Application Service push API for inbound events), never by touching its database directly. The bridge is its own PDS (Personal Data Server), the piece of ATProto that hosts accounts, but it stores no post content or media of its own: that all lives in Matrix rooms, and each account's repository is regenerated from them on demand. The only local state is bookkeeping (accounts and their signing keys, follow relationships, and the Matrix-event/ATProto-record map), kept in a SQLite file or a Postgres database.
 
 It is designed as a sibling of [matrix-appservice-activitypub](https://github.com/Haven-Organization/matrix-appservice-activitypub): the same room model, command structure and MSC4501 behaviour, and the two can run side by side on one homeserver.
 
@@ -47,7 +47,7 @@ See [INSTALL.md](INSTALL.md) for the full walkthrough, natively or in Docker. In
 
 ## Storage
 
-Bookkeeping (accounts and their keys, handle claims, follow relationships, ghost profiles, the Matrix-event/ATProto-record map, and the PDS's event log) lives in a local SQLite file, `bridge.db` under `storage.data_dir`. No post content or media is stored outside Matrix itself.
+Bookkeeping (accounts and their keys, handle claims, follow relationships, ghost profiles, the Matrix-event/ATProto-record map, and the PDS's event log) lives in either a local SQLite file (`storage.backend: sqlite`, the default; `bridge.db` under `storage.data_dir`) or PostgreSQL (`storage.backend: postgresql`), selected in `config.yaml`. Same schema and content either way, and an existing SQLite database can be moved over (see [CONFIG.md](CONFIG.md#storage)). No post content or media is stored outside Matrix itself.
 
 ## License
 

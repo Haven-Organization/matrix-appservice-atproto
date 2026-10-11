@@ -3,6 +3,11 @@
 Persists to a single sqlite file under ``storage.data_dir``. This is the
 default repository used by ``bridge.server.create_app``.
 
+Every query here is written in the SQL that SQLite and PostgreSQL both
+accept ("?" placeholders, ``ON CONFLICT`` rather than ``INSERT OR ...``,
+``RETURNING`` rather than ``lastrowid``): ``bridge.postgres_repository``
+runs these same methods against Postgres, so keep to that subset.
+
 ``sqlite3`` connections aren't safe to use concurrently from multiple
 threads without care; this wraps every call in ``asyncio.to_thread`` behind
 a single ``asyncio.Lock`` so the (fast, local, low-volume) database access
@@ -187,6 +192,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS accounts_profile_room ON accounts (profile_roo
 CREATE INDEX IF NOT EXISTS records_matrix_event ON records (matrix_event_id);
 """
 
+# Run on every startup, after the schema is in place.
+_STARTUP_FIXUPS = (
+    # Events mirrored before mirrored_events recorded a post's hash take it
+    # from the post they belong to.
+    "UPDATE mirrored_events SET cid = COALESCE((SELECT cid FROM mirrored_posts WHERE uri = mirrored_events.uri), '') "
+    "WHERE cid = ''",
+)
+
 _CLAIM_COLUMNS = "label, matrix_user_id, did, claimed_at"
 _ACCOUNT_COLUMNS = (
     "did, matrix_user_id, label, signing_key_hex, genesis_operation, plc_registered, active, "
@@ -229,12 +242,8 @@ class SqliteBridgeRepository:
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         self._conn.executescript(_INDEXES)
-        # Events mirrored before mirrored_events recorded a post's hash
-        # take it from the post they belong to.
-        self._conn.execute(
-            "UPDATE mirrored_events SET cid = COALESCE((SELECT cid FROM mirrored_posts WHERE uri = mirrored_events.uri), '') "
-            "WHERE cid = ''"
-        )
+        for statement in _STARTUP_FIXUPS:
+            self._conn.execute(statement)
         self._conn.commit()
         self._lock = asyncio.Lock()
 
@@ -281,7 +290,7 @@ class SqliteBridgeRepository:
             # OR IGNORE covers both unique constraints: the label being
             # held, and this user already holding a different label.
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO handle_claims (label, matrix_user_id, did, claimed_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO handle_claims (label, matrix_user_id, did, claimed_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (claim.label, claim.matrix_user_id, claim.did, claim.claimed_at),
             )
             return claim if cursor.rowcount == 1 else None
@@ -298,7 +307,7 @@ class SqliteBridgeRepository:
 
     async def get_or_create_server_key(self, name: str, candidate_hex: str) -> str:
         def upsert(conn: sqlite3.Connection) -> str:
-            conn.execute("INSERT OR IGNORE INTO server_keys (name, private_hex) VALUES (?, ?)", (name, candidate_hex))
+            conn.execute("INSERT INTO server_keys (name, private_hex) VALUES (?, ?) ON CONFLICT DO NOTHING", (name, candidate_hex))
             return conn.execute("SELECT private_hex FROM server_keys WHERE name = ?", (name,)).fetchone()[0]
 
         return await self._run(upsert)
@@ -416,7 +425,8 @@ class SqliteBridgeRepository:
     async def add_blob(self, blob: BlobRow) -> None:
         await self._run(
             lambda conn: conn.execute(
-                "INSERT OR REPLACE INTO blobs (did, cid, mxc, mime_type, size, matrix_event_id) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO blobs (did, cid, mxc, mime_type, size, matrix_event_id) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (did, cid) DO UPDATE SET mxc = excluded.mxc, mime_type = excluded.mime_type, size = excluded.size, matrix_event_id = excluded.matrix_event_id",
                 (blob.did, blob.cid, blob.mxc, blob.mime_type, blob.size, blob.matrix_event_id),
             )
         )
@@ -442,7 +452,8 @@ class SqliteBridgeRepository:
     async def publish_media(self, media: PublishedMedia) -> None:
         await self._run(
             lambda conn: conn.execute(
-                "INSERT OR REPLACE INTO published_media (mxc, matrix_event_id) VALUES (?, ?)",
+                "INSERT INTO published_media (mxc, matrix_event_id) VALUES (?, ?) "
+                "ON CONFLICT (mxc) DO UPDATE SET matrix_event_id = excluded.matrix_event_id",
                 (media.mxc, media.matrix_event_id),
             )
         )
@@ -480,7 +491,8 @@ class SqliteBridgeRepository:
                 [(did, collection, rkey) for collection, rkey in deletes],
             )
             conn.executemany(
-                f"INSERT OR REPLACE INTO records ({_RECORD_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO records ({_RECORD_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?) "
+                f"ON CONFLICT (did, collection, rkey) DO UPDATE SET cid = excluded.cid, source = excluded.source, matrix_event_id = excluded.matrix_event_id",
                 [(row.did, row.collection, row.rkey, row.cid, row.source, row.matrix_event_id) for row in upserts],
             )
             conn.execute(
@@ -495,9 +507,9 @@ class SqliteBridgeRepository:
     async def next_firehose_seq(self, did: str, kind: str) -> int:
         def insert(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(
-                "INSERT INTO firehose_events (did, kind, created_at) VALUES (?, ?, ?)", (did, kind, _now())
+                "INSERT INTO firehose_events (did, kind, created_at) VALUES (?, ?, ?) RETURNING seq", (did, kind, _now())
             )
-            return int(cursor.lastrowid)
+            return int(cursor.fetchone()[0])
 
         return await self._run(insert)
 
@@ -521,7 +533,8 @@ class SqliteBridgeRepository:
     async def save_remote_account(self, account: RemoteAccount) -> None:
         await self._run(
             lambda conn: conn.execute(
-                "INSERT OR REPLACE INTO remote_accounts (did, handle, pds, ghost_user_id, room_id) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO remote_accounts (did, handle, pds, ghost_user_id, room_id) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (did) DO UPDATE SET handle = excluded.handle, pds = excluded.pds, ghost_user_id = excluded.ghost_user_id, room_id = excluded.room_id",
                 (account.did, account.handle, account.pds, account.ghost_user_id, account.room_id),
             )
         )
@@ -553,7 +566,8 @@ class SqliteBridgeRepository:
     async def add_follow(self, local_did: str, remote_did: str, rkey: str) -> None:
         await self._run(
             lambda conn: conn.execute(
-                "INSERT OR REPLACE INTO follows (local_did, remote_did, rkey) VALUES (?, ?, ?)",
+                "INSERT INTO follows (local_did, remote_did, rkey) VALUES (?, ?, ?) "
+                "ON CONFLICT (local_did, remote_did) DO UPDATE SET rkey = excluded.rkey",
                 (local_did, remote_did, rkey),
             )
         )
@@ -594,13 +608,14 @@ class SqliteBridgeRepository:
     async def add_mirrored_post(self, post: MirroredPost) -> bool:
         def insert(conn: sqlite3.Connection) -> bool:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO mirrored_posts (uri, room_id, event_ids, cid, root_uri, root_cid) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO mirrored_posts (uri, room_id, event_ids, cid, root_uri, root_cid) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (post.uri, post.room_id, json.dumps(post.event_ids), post.cid, post.root_uri, post.root_cid),
             )
             if cursor.rowcount != 1:
                 return False
             conn.executemany(
-                "INSERT OR REPLACE INTO mirrored_events (event_id, uri, cid) VALUES (?, ?, ?)",
+                "INSERT INTO mirrored_events (event_id, uri, cid) VALUES (?, ?, ?) "
+                "ON CONFLICT (event_id) DO UPDATE SET uri = excluded.uri, cid = excluded.cid",
                 [(event_id, post.shown_uri or post.uri, post.shown_cid or post.cid) for event_id in post.event_ids],
             )
             return True
@@ -645,7 +660,8 @@ class SqliteBridgeRepository:
 
     async def set_value(self, key: str, value: str) -> None:
         await self._run(
-            lambda conn: conn.execute("INSERT OR REPLACE INTO bridge_state (key, value) VALUES (?, ?)", (key, value))
+            lambda conn: conn.execute("INSERT INTO bridge_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
         )
 
     async def delete_value(self, key: str) -> None:
@@ -662,7 +678,7 @@ class SqliteBridgeRepository:
 
     async def _set_user_room(self, column: str, matrix_user_id: str, room_id: str) -> None:
         def upsert(conn: sqlite3.Connection) -> None:
-            conn.execute("INSERT OR IGNORE INTO user_rooms (matrix_user_id) VALUES (?)", (matrix_user_id,))
+            conn.execute("INSERT INTO user_rooms (matrix_user_id) VALUES (?) ON CONFLICT DO NOTHING", (matrix_user_id,))
             conn.execute(f"UPDATE user_rooms SET {column} = ? WHERE matrix_user_id = ?", (room_id, matrix_user_id))
 
         await self._run(upsert)
@@ -701,7 +717,8 @@ class SqliteBridgeRepository:
         def upsert(conn: sqlite3.Connection) -> None:
             conn.execute("DELETE FROM chat_rooms WHERE local_did = ? AND remote_did = ?", (chat.local_did, chat.remote_did))
             conn.execute(
-                "INSERT OR REPLACE INTO chat_rooms (room_id, local_did, remote_did, convo_id) VALUES (?, ?, ?, ?)",
+                "INSERT INTO chat_rooms (room_id, local_did, remote_did, convo_id) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (room_id) DO UPDATE SET local_did = excluded.local_did, remote_did = excluded.remote_did, convo_id = excluded.convo_id",
                 (chat.room_id, chat.local_did, chat.remote_did, chat.convo_id),
             )
 
@@ -737,7 +754,7 @@ class SqliteBridgeRepository:
     async def add_chat_message(self, message_id: str, room_id: str, event_id: str) -> bool:
         def insert(conn: sqlite3.Connection) -> bool:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO chat_messages (message_id, room_id, event_id) VALUES (?, ?, ?)",
+                "INSERT INTO chat_messages (message_id, room_id, event_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
                 (message_id, room_id, event_id),
             )
             return cursor.rowcount == 1
@@ -768,7 +785,7 @@ class SqliteBridgeRepository:
 
     async def mark_transaction_processed(self, txn_id: str) -> None:
         await self._run(
-            lambda conn: conn.execute("INSERT OR IGNORE INTO processed_transactions (txn_id) VALUES (?)", (txn_id,))
+            lambda conn: conn.execute("INSERT INTO processed_transactions (txn_id) VALUES (?) ON CONFLICT DO NOTHING", (txn_id,))
         )
 
     async def close(self) -> None:

@@ -20,6 +20,8 @@ The bridge reads `config.yaml` once, at startup, so restart it after a change. T
   - [Chat rooms](#chat-rooms)
   - [MSC4501 and related proposals](#msc4501-and-related-proposals)
 - [`synapse`](#synapse)
+- [`storage`](#storage)
+  - [Moving from SQLite to Postgres](#moving-from-sqlite-to-postgres)
 - [`handles`](#handles)
 - [`atproto`](#atproto)
   - [Network endpoints](#network-endpoints)
@@ -48,7 +50,8 @@ These are documented inline in `config.example.yaml` and only summarised here.
 | `appservice.bot_display_name` / `bot_avatar_mxc` | unset (not managed) | The bot's profile, applied at startup. |
 | `appservice.user_prefix` | `at_` | Username prefix of ghost users. Changing it later orphans existing ghosts and needs the registration regenerated. |
 | `appservice.command_prefix` | `]` | What a command starts with when the bot isn't tagged. |
-| `storage.data_dir` | `./data` | Where `bridge.db` is kept. |
+| `storage.backend` | `sqlite` | `sqlite` or `postgresql`. See [`storage`](#storage). |
+| `storage.data_dir` | `./data` | Where `bridge.db` is kept (SQLite). |
 | `handles.reserved` | `[]` | Subdomains nobody may claim as a handle. |
 | `logging.level` | `INFO` | Log level. |
 
@@ -161,6 +164,73 @@ Where each ghost's real Bluesky handle is recorded (MSC4503): as a field on its 
 **Default:** unset
 
 A Synapse admin access token. It is used for one thing: asking whether a user is a server admin, so that server admins count as bridge admins. Without it, only the users in [`bridge.admins`](#bridgeadmins) are. Leave it unset on a homeserver other than Synapse.
+
+---
+
+## `storage`
+
+The bridge's bookkeeping (accounts and their signing keys, handle claims, follows, the Matrix-event/record map, the PDS's event log) is kept in one of two places. Same data and behaviour either way; no post content or media is stored in either.
+
+#### `storage.backend`
+
+**Default:** `sqlite`. One of `sqlite`, `postgresql`.
+
+- `sqlite`: a single file, `bridge.db`, under `storage.data_dir`. Nothing to set up.
+- `postgresql`: the Postgres server described by `storage.postgres`. Useful if you already run Postgres for something else, such as your homeserver, and want one database system to back up.
+
+Switching backends does not move your data by itself; see [Moving from SQLite to Postgres](#moving-from-sqlite-to-postgres).
+
+#### `storage.postgres`
+
+Only read when the backend is `postgresql`. Either give a full connection string, or the separate fields; `dsn` wins if both are present.
+
+```yaml
+storage:
+  backend: postgresql
+  postgres:
+    # dsn: "postgresql://matrix_appservice_atproto:replace_me@localhost:5432/matrix_appservice_atproto"
+    host: localhost
+    port: 5432
+    database: matrix_appservice_atproto
+    user: matrix_appservice_atproto
+    password: "replace_me"
+```
+
+| Setting | Default |
+|---|---|
+| `storage.postgres.dsn` | unset |
+| `storage.postgres.host` | `localhost` |
+| `storage.postgres.port` | `5432` |
+| `storage.postgres.database` | `matrix_appservice_atproto` |
+| `storage.postgres.user` | `matrix_appservice_atproto` |
+| `storage.postgres.password` | unset |
+
+Create the role and an empty database first; the bridge creates its tables on startup:
+
+```sh
+sudo -u postgres createuser --pwprompt matrix_appservice_atproto
+sudo -u postgres createdb --owner matrix_appservice_atproto matrix_appservice_atproto
+```
+
+The database's locale doesn't matter: the bridge's text columns use byte-order ("C") collation regardless. It needs the `psycopg2` Python package, which `requirements.txt` and the Docker image include (on a distro-packaged install, `python-psycopg2` or `python3-psycopg2`). The bridge uses a single connection, waits up to a minute for the database at startup, and reconnects if the connection is lost later.
+
+### Moving from SQLite to Postgres
+
+`bridge.db` holds every account's signing keys, so an existing install must be migrated, not started empty. With the bridge **stopped**:
+
+1. Create the role and database as above, and add the `storage.postgres` settings to `config.yaml` (leave `backend` as it is for now).
+2. Copy the data:
+
+   ```sh
+   .venv/bin/python -m bridge.storage migrate config.yaml
+   ```
+
+   In Docker: `docker compose run --rm --entrypoint python bridge -m bridge.storage migrate /config/config.yaml`.
+
+   It copies every table in one transaction, checks the row counts, and carries the firehose sequence number over so relays resume where they left off. It refuses to write into a database that already has data, and it only reads `bridge.db`.
+3. Set `storage.backend: postgresql` and start the bridge.
+
+Keep `bridge.db` as a backup. There is no tool for the reverse direction.
 
 ---
 
