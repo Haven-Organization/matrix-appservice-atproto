@@ -99,6 +99,16 @@ docker run --rm --entrypoint python \
   -m bridge.appservice /config/config.yaml /data/appservice-registration.yaml
 ```
 
+That writes the file into the `bridge-data` volume (the only place the container can write). Copy it out to wherever your homeserver can read it:
+
+```sh
+docker run --rm --entrypoint cat -v bridge-data:/data \
+  ghcr.io/haven-organization/matrix-appservice-atproto:latest \
+  /data/appservice-registration.yaml > appservice-registration.yaml
+```
+
+The file depends only on `config.yaml`, so it doesn't matter that `docker compose` later names its own volume differently (`<project>_bridge-data`).
+
 Add the resulting file's path to your homeserver's application-service config (`app_service_config_files` in `homeserver.yaml` for Synapse), then restart the homeserver.
 
 ## 6. Run the bridge

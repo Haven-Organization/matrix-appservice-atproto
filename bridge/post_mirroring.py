@@ -337,6 +337,22 @@ async def _send_post(
         return []
 
 
+async def _thread_root_of(app: FastAPI, ref: PostRef) -> str:
+    """The event a reply to ``ref`` threads under: the root of the thread
+    ``ref`` is already in, else ``ref`` itself. Matrix threads are flat --
+    a thread can't be started from an event that is itself in one -- so
+    when the conversation's first post isn't in Matrix, the earliest post
+    of it that is serves as the root for everything below."""
+    try:
+        event = await app.state.synapse.get_event(ref.room_id, ref.event_id, as_user_id=_bot(app))
+    except SynapseError:
+        return ref.event_id
+    relates = ((event or {}).get("content") or {}).get("m.relates_to")
+    if isinstance(relates, dict) and relates.get("rel_type") == "m.thread" and isinstance(relates.get("event_id"), str):
+        return relates["event_id"]
+    return ref.event_id
+
+
 def _thread_relation(root_event_id: str, parent_event_id: str) -> dict[str, Any]:
     return {
         "rel_type": "m.thread",
@@ -398,7 +414,10 @@ async def mirror_post(
     elif parent is not None and await _ensure_ghost_in_room(app, ghost, parent.room_id):
         # The conversation is in Matrix: thread this under it, there.
         root_ref = await locate_post_by_uri(app, root_uri) if root_uri else None
-        root_event = root_ref.event_id if root_ref is not None and root_ref.room_id == parent.room_id else parent.event_id
+        if root_ref is not None and root_ref.room_id == parent.room_id:
+            root_event = root_ref.event_id
+        else:
+            root_event = await _thread_root_of(app, parent)
         room_id = parent.room_id
         relates_to = _thread_relation(root_event, parent.event_id)
         relation = await social_relation(app, SOCIAL_REL_TYPE_REPLY, parent)
