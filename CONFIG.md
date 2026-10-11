@@ -324,6 +324,8 @@ The largest remote image or video copied into Matrix, in megabytes. Anything big
 
 How often each account's notifications (new followers, likes, reposts, replies, mentions, quotes) are checked. `0` turns notifications off.
 
+This is the longest a notification can take, not the usual wait. When the live feed delivers a like, repost, reply, quote or mention aimed at a local account, that account is checked within a second or two instead of at the next round. The live feed only carries accounts someone here follows, so this setting is what decides how quickly interactions from everyone else show up. Lowering it (to `10`, say) costs one small request per account per interval.
+
 ### Chat
 
 #### `atproto.chat_poll_seconds`

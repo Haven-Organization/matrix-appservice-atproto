@@ -34,6 +34,7 @@ from fastapi import FastAPI
 
 from bridge.atproto.identity import resolve_did
 from bridge.matrix_records import POST_COLLECTION, PROFILE_COLLECTION
+from bridge.notification_poller import nudge_notifications
 from bridge.post_mirroring import REPOST_COLLECTION, mirror_post, mirror_repost, unmirror, unmirror_post
 from bridge.reaction_mirroring import LIKE_EMOJI, REPOST_EMOJI, mirror_reaction, unmirror_reaction
 from bridge.remote_accounts import catch_up, note_post_seen, note_repost_seen, refresh_remote_account
@@ -102,17 +103,20 @@ async def handle_event(app: FastAPI, event: dict[str, Any], accounts: dict[str, 
     elif collection == POST_COLLECTION and operation == "create" and isinstance(commit.get("record"), dict):
         await mirror_post(app, remote, rkey, commit["record"], cid=str(commit.get("cid", "")))
         await note_post_seen(app, remote.did, rkey)
+        await nudge_notifications(app, commit["record"])
     elif collection == POST_COLLECTION and operation == "delete":
         await unmirror_post(app, remote, rkey)
     elif collection == REPOST_COLLECTION and operation == "create" and isinstance(commit.get("record"), dict):
         await mirror_repost(app, remote, rkey, commit["record"])
         await note_repost_seen(app, remote.did, rkey)
         await _react(app, remote, collection, rkey, commit["record"], REPOST_EMOJI)
+        await nudge_notifications(app, commit["record"])
     elif collection == REPOST_COLLECTION and operation == "delete":
         await unmirror(app, f"at://{remote.did}/{REPOST_COLLECTION}/{rkey}")
         await unmirror_reaction(app, f"at://{remote.did}/{REPOST_COLLECTION}/{rkey}")
     elif collection == LIKE_COLLECTION and operation == "create" and isinstance(commit.get("record"), dict):
         await _react(app, remote, collection, rkey, commit["record"], LIKE_EMOJI)
+        await nudge_notifications(app, commit["record"])
     elif collection == LIKE_COLLECTION and operation == "delete":
         await unmirror_reaction(app, f"at://{remote.did}/{LIKE_COLLECTION}/{rkey}")
 

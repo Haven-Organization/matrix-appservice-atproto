@@ -184,8 +184,22 @@ async def _mirror_reply(app: FastAPI, notification: dict[str, Any]) -> None:
     await mirror_post(app, remote, parts[2], record, cid=str(notification.get("cid", "")))
 
 
+def _poll_lock(app: FastAPI, did: str) -> asyncio.Lock:
+    locks = getattr(app.state, "notification_locks", None)
+    if locks is None:
+        locks = app.state.notification_locks = {}
+    return locks.setdefault(did, asyncio.Lock())
+
+
 async def poll_account(app: FastAPI, account: Account) -> int:
-    """Send any new notifications for ``account``. Returns how many."""
+    """Send any new notifications for ``account``. Returns how many.
+    One check per account at a time: the regular round and an early
+    check (``nudge_notifications``) overlapping would send things twice."""
+    async with _poll_lock(app, account.did):
+        return await _poll_account(app, account)
+
+
+async def _poll_account(app: FastAPI, account: Account) -> int:
     notifications = await fetch_notifications(app, account)
     if not notifications:
         return 0
@@ -227,6 +241,81 @@ async def poll_account(app: FastAPI, account: Account) -> int:
         # the ones already delivered.
         await repository.set_value(key, _position(notification))
     return sent
+
+
+# After the live feed shows something aimed at a local account, its
+# notifications are checked this many seconds later -- again, a little
+# later each time, until the AppView has caught up and reports it.
+_NUDGE_DELAYS = (1.0, 2.0, 4.0, 8.0)
+
+
+def _did_of(uri: Any) -> str:
+    return uri[5:].split("/", 1)[0] if isinstance(uri, str) and uri.startswith("at://") else ""
+
+
+def addressed_dids(record: dict[str, Any]) -> set[str]:
+    """The accounts a record would notify: whose post it likes, reposts,
+    replies to or quotes, and whom it mentions."""
+    dids: set[str] = set()
+    subject = record.get("subject")
+    if isinstance(subject, dict):
+        dids.add(_did_of(subject.get("uri")))
+    reply = record.get("reply")
+    if isinstance(reply, dict):
+        for part in ("parent", "root"):
+            if isinstance(reply.get(part), dict):
+                dids.add(_did_of(reply[part].get("uri")))
+    embed = record.get("embed")
+    if isinstance(embed, dict):
+        quoted = embed.get("record")
+        if isinstance(quoted, dict):
+            # app.bsky.embed.record, or recordWithMedia wrapping one.
+            inner = quoted.get("record") if isinstance(quoted.get("record"), dict) else quoted
+            dids.add(_did_of(inner.get("uri")))
+    for facet in record.get("facets") or []:
+        for feature in (facet.get("features") or []) if isinstance(facet, dict) else []:
+            if isinstance(feature, dict) and isinstance(feature.get("did"), str):
+                dids.add(feature["did"])
+    dids.discard("")
+    return dids
+
+
+async def _check_early(app: FastAPI, account: Account) -> None:
+    try:
+        for delay in _NUDGE_DELAYS:
+            await asyncio.sleep(delay)
+            if await poll_account(app, account):
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Early notification check for %s failed", account.did)
+    finally:
+        app.state.notification_nudges.discard(account.did)
+
+
+async def nudge_notifications(app: FastAPI, record: dict[str, Any]) -> None:
+    """The live feed just delivered ``record``. If it is aimed at a local
+    account, check that account's notifications now instead of waiting for
+    the next regular round, so the notification arrives with the event
+    rather than up to ``notification_poll_seconds`` after it. (The live
+    feed only carries followed accounts; everyone else's interactions are
+    still found by the regular round.)"""
+    if app.state.config.atproto.notification_poll_seconds <= 0:
+        return
+    pending = getattr(app.state, "notification_nudges", None)
+    if pending is None:
+        pending = app.state.notification_nudges = set()
+    for did in addressed_dids(record):
+        if did in pending:
+            continue
+        account = await app.state.repository.get_account(did)
+        if account is None or not (account.plc_registered and account.active):
+            continue
+        pending.add(did)
+        task = asyncio.create_task(_check_early(app, account))
+        app.state.background_tasks.add(task)
+        task.add_done_callback(app.state.background_tasks.discard)
 
 
 async def notification_loop(app: FastAPI) -> None:
