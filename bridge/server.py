@@ -32,7 +32,7 @@ from bridge.commands import bot_mxid
 from bridge.handle_provisioning import audit_handle_claims
 from bridge.bridge_info import refresh_all_bridge_info
 from bridge.chat import chat_loop, ensure_declaration
-from bridge.jetstream import JetstreamConsumer, catch_up_loop
+from bridge.jetstream import JetstreamFeed, catch_up_loop
 from bridge.matrix_records import register_matrix_sources
 from bridge.notification_poller import notification_loop
 from bridge.pds import Pds, PdsError
@@ -227,7 +227,7 @@ def create_app(
         )
         relay_task = asyncio.create_task(_announce_to_relays(app.state.pds, app.state.repository))
         app.state.background_tasks = set()
-        app.state.jetstream = JetstreamConsumer(app, config.atproto.jetstream_url)
+        app.state.jetstream = JetstreamFeed(app, config.atproto.jetstream_urls)
         jetstream_task = asyncio.create_task(app.state.jetstream.run())
         notifications_task = asyncio.create_task(notification_loop(app))
         catch_up_task = asyncio.create_task(catch_up_loop(app))

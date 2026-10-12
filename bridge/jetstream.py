@@ -56,6 +56,9 @@ _CURSOR_REWIND_US = 5_000_000
 # reconnect after a long quiet spell doesn't replay hours of the network.
 _IDLE_CURSOR_INTERVAL = 30.0
 _IDLE_CURSOR_MARGIN_US = 60_000_000
+# How many recent events are remembered, to tell a second endpoint's copy
+# of one from a new one.
+_SEEN_EVENTS = 5000
 _FIRST_CATCH_UP_DELAY = 20.0
 # Every this many catch-up rounds is also a profile refresh.
 _PROFILE_REFRESH_EVERY = 12
@@ -150,10 +153,45 @@ async def catch_up_loop(app: FastAPI) -> None:
             logger.exception("Catch-up check failed")
 
 
+class JetstreamFeed:
+    """The live feed, read from every configured endpoint at once.
+
+    One endpoint is not dependable: an endpoint has been seen to accept a
+    subscription for a set of accounts and then deliver none of their
+    events, for hours, while reporting nothing wrong -- which looks
+    exactly like those accounts being quiet. So each endpoint gets its own
+    connection, and an event is acted on the first time any of them
+    delivers it."""
+
+    def __init__(self, app: FastAPI, urls: list[str]) -> None:
+        seen: dict[tuple, None] = {}
+        self._consumers = [JetstreamConsumer(app, url, seen=seen) for url in urls]
+
+    def refresh(self) -> None:
+        """Call when the set of followed accounts changes."""
+        for consumer in self._consumers:
+            consumer.refresh()
+
+    async def run(self) -> None:
+        await asyncio.gather(*(consumer.run() for consumer in self._consumers))
+
+
+def _event_key(event: dict[str, Any]) -> tuple | None:
+    """What makes two endpoints' copies of a record change the same
+    event. ``None`` for anything else, which is simply handled again."""
+    commit = event.get("commit")
+    if not isinstance(commit, dict) or not commit.get("rev"):
+        return None
+    return (event.get("did"), commit.get("collection"), commit.get("rkey"), commit.get("operation"), commit["rev"])
+
+
 class JetstreamConsumer:
-    def __init__(self, app: FastAPI, url: str) -> None:
+    def __init__(self, app: FastAPI, url: str, *, seen: dict[tuple, None] | None = None) -> None:
         self._app = app
         self._url = url
+        self._host = url.split("://", 1)[-1].split("/", 1)[0]
+        self._cursor_key = f"{_CURSOR_KEY}:{self._host}"
+        self._seen = seen if seen is not None else {}
         self._changed = asyncio.Event()
         self._connected_at: float | None = None
         self._events = 0
@@ -195,11 +233,11 @@ class JetstreamConsumer:
                     close = exc.rcvd
                     how = f"close code {close.code} {close.reason!r}" if close is not None else "no close frame"
                     logger.info(
-                        "Jetstream connection closed after %.0fs and %d event(s) (%s); reconnecting in %.0fs",
-                        lasted, self._events, how, delay,
+                        "Jetstream connection to %s closed after %.0fs and %d event(s) (%s); reconnecting in %.0fs",
+                        self._host, lasted, self._events, how, delay,
                     )
                 else:
-                    logger.warning("Jetstream connection failed (%r); reconnecting in %.0fs", exc, delay)
+                    logger.warning("Jetstream connection to %s failed (%r); reconnecting in %.0fs", self._host, exc, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY)
 
@@ -216,22 +254,42 @@ class JetstreamConsumer:
             )
         )
 
-    async def _advance_cursor(self, time_us: int) -> None:
+    async def _cursor(self) -> str | None:
+        """This endpoint's saved position. Positions are each endpoint's
+        own clock, so they are kept apart; one saved before there were
+        several endpoints is close enough to start from."""
         repository = self._app.state.repository
-        saved = await repository.get_value(_CURSOR_KEY)
+        return await repository.get_value(self._cursor_key) or await repository.get_value(_CURSOR_KEY)
+
+    async def _advance_cursor(self, time_us: int) -> None:
+        saved = await self._cursor()
         if saved is None or time_us > int(saved):
-            await repository.set_value(_CURSOR_KEY, str(time_us))
+            await self._app.state.repository.set_value(self._cursor_key, str(time_us))
+
+    def _is_repeat(self, event: dict[str, Any]) -> bool:
+        """Whether another endpoint already delivered this event. Noted
+        before it is handled, so two copies arriving together can't both
+        be acted on."""
+        key = _event_key(event)
+        if key is None:
+            return False
+        if key in self._seen:
+            return True
+        self._seen[key] = None
+        while len(self._seen) > _SEEN_EVENTS:
+            del self._seen[next(iter(self._seen))]
+        return False
 
     async def _consume(self, accounts: dict[str, RemoteAccount]) -> None:
         # requireHello: send nothing until told which accounts are wanted,
         # rather than the whole network in the meantime.
         url = f"{self._url}?requireHello=true"
-        cursor = await self._app.state.repository.get_value(_CURSOR_KEY)
+        cursor = await self._cursor()
         if cursor:
             url += f"&cursor={max(int(cursor) - _CURSOR_REWIND_US, 0)}"
         async with websockets.connect(url, max_size=2_000_000) as socket:
             await self._send_options(socket, accounts)
-            logger.info("Jetstream connected, watching %d account(s)", len(accounts))
+            logger.info("Jetstream connected to %s, watching %d account(s)", self._host, len(accounts))
             self._connected_at = time.monotonic()
             receive: asyncio.Task | None = None
             changed: asyncio.Task | None = None
@@ -260,10 +318,11 @@ class JetstreamConsumer:
                             event = json.loads(message)
                         except ValueError:
                             continue
-                        try:
-                            await handle_event(self._app, event, accounts)
-                        except Exception:
-                            logger.exception("Error handling Jetstream event for %s", event.get("did"))
+                        if not self._is_repeat(event):
+                            try:
+                                await handle_event(self._app, event, accounts)
+                            except Exception:
+                                logger.exception("Error handling Jetstream event for %s", event.get("did"))
                         if isinstance(event.get("time_us"), int):
                             await self._advance_cursor(event["time_us"])
             finally:

@@ -15,6 +15,11 @@ import yaml
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 CONFIG_PATH_ENV_VAR = "BRIDGE_CONFIG"
+# Two of Bluesky's public Jetstream instances, in different regions.
+DEFAULT_JETSTREAM_URLS = (
+    "wss://jetstream1.us-east.bsky.network/subscribe",
+    "wss://jetstream2.us-west.bsky.network/subscribe",
+)
 
 
 class ConfigError(Exception):
@@ -206,10 +211,11 @@ class AtprotoSection:
     # bsky.network is Bluesky's, which is what makes local accounts visible
     # in the Bluesky app.
     relays: list[str] = field(default_factory=lambda: ["https://bsky.network"])
-    # Where followed accounts' new posts are received from: a Jetstream
-    # endpoint (Bluesky's JSON view of the network firehose, filtered
-    # server-side to just the accounts followed here).
-    jetstream_url: str = "wss://jetstream2.us-east.bsky.network/subscribe"
+    # Where followed accounts' new posts are received from: Jetstream
+    # endpoints (Bluesky's JSON view of the network firehose, filtered
+    # server-side to just the accounts followed here). All are listened to
+    # at once, so one of them going quiet loses nothing.
+    jetstream_urls: list[str] = field(default_factory=lambda: list(DEFAULT_JETSTREAM_URLS))
     # How many of an account's most recent posts are mirrored when someone
     # here first follows it.
     follow_backfill_count: int = 15
@@ -268,6 +274,18 @@ def _label_list(section: dict[str, Any], key: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigError(f"handles.{key} must be a list of strings")
     return value
+
+
+def _jetstream_urls(section: dict[str, Any]) -> list[str]:
+    """``atproto.jetstream_urls``, or the single ``jetstream_url`` older
+    configs have."""
+    value = section.get("jetstream_urls", section.get("jetstream_url"))
+    if value is None:
+        return list(DEFAULT_JETSTREAM_URLS)
+    urls = [value] if isinstance(value, str) else value
+    if not isinstance(urls, list) or not urls or not all(isinstance(url, str) and url for url in urls):
+        raise ConfigError("atproto.jetstream_urls must be a non-empty list of URLs")
+    return list(dict.fromkeys(urls))
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
@@ -383,7 +401,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
     atproto_section = AtprotoSection(
         plc_directory=atproto_raw.get("plc_directory", "https://plc.directory").rstrip("/"),
         relays=[str(relay).rstrip("/") for relay in atproto_raw.get("relays", ["https://bsky.network"]) or []],
-        jetstream_url=atproto_raw.get("jetstream_url", "wss://jetstream2.us-east.bsky.network/subscribe"),
+        jetstream_urls=_jetstream_urls(atproto_raw),
         follow_backfill_count=int(atproto_raw.get("follow_backfill_count", 15)),
         catchup_minutes=int(atproto_raw.get("catchup_minutes", 5)),
         max_media_mb=int(atproto_raw.get("max_media_mb", 50)),

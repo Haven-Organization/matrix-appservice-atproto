@@ -278,11 +278,13 @@ The did:plc directory new accounts are registered with. The real network uses ex
 
 Relays asked to crawl this PDS. `bsky.network` is Bluesky's, which is what makes local accounts visible in the Bluesky app. An empty list means posts never leave this server.
 
-#### `atproto.jetstream_url`
+#### `atproto.jetstream_urls`
 
-**Default:** `wss://jetstream2.us-east.bsky.network/subscribe`
+**Default:** `wss://jetstream1.us-east.bsky.network/subscribe` and `wss://jetstream2.us-west.bsky.network/subscribe`
 
-Where followed accounts' new posts are received from: a Jetstream endpoint, filtered to just the accounts followed here.
+Where followed accounts' new posts, reposts and likes are received from: a list of Jetstream endpoints, each filtered to just the accounts followed here. The bridge listens to all of them at once and acts on an event the first time any delivers it. Keep at least two: a single endpoint can go quiet for some accounts without reporting an error, and everything it misses then arrives only at the next catch-up check (`atproto.catchup_minutes`).
+
+A single `atproto.jetstream_url` from an older config is still accepted.
 
 #### `atproto.appview_url` / `atproto.appview_did`
 
