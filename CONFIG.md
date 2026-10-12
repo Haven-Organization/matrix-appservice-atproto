@@ -117,7 +117,7 @@ Mirror remote accounts' posts as `org.matrix.msc4501.social.post` events instead
 
 **Default:** `true`
 
-Add `org.matrix.msc4501.social.relates_to` to mirrored replies, reposts and quote-posts. Purely additive on an ordinary message.
+Add `org.matrix.msc4501.social.relates_to` to mirrored reposts and quote-posts, and to replies that are cross-posted outside their thread (a reply sitting in its thread carries only the thread relation). Purely additive on an ordinary message.
 
 #### `bridge.use_msc4501_content_inline`
 

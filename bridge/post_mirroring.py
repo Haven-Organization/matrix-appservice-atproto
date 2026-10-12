@@ -410,7 +410,6 @@ async def mirror_post(
     if thread_root is not None:
         target = parent.event_id if parent is not None and parent.room_id == room_id else thread_root
         relates_to = _thread_relation(thread_root, target)
-        relation = await social_relation(app, SOCIAL_REL_TYPE_REPLY, parent)
     elif parent is not None and await _ensure_ghost_in_room(app, ghost, parent.room_id):
         # The conversation is in Matrix: thread this under it, there.
         root_ref = await locate_post_by_uri(app, root_uri) if root_uri else None
@@ -420,7 +419,6 @@ async def mirror_post(
             root_event = await _thread_root_of(app, parent)
         room_id = parent.room_id
         relates_to = _thread_relation(root_event, parent.event_id)
-        relation = await social_relation(app, SOCIAL_REL_TYPE_REPLY, parent)
         own = await repository.get_remote_account(remote.did)
         if own is not None and own.room_id != room_id:
             echo_into = own.room_id
@@ -436,8 +434,7 @@ async def mirror_post(
     if quoted_uri:
         tail, quote_relation = await _quoted_post_render(app, quoted_uri)
         # A quote-post: MSC4501 treats it as a repost with commentary.
-        # (A reply that also quotes keeps its reply relation.)
-        relation = relation or quote_relation
+        relation = quote_relation
 
     event_ids = await _send_post(
         app, room_id=room_id, header=header, relates_to=relates_to, relation=relation, tail=tail, **common
@@ -454,7 +451,13 @@ async def mirror_post(
             f"⤵️ Reply to {parent_label}'s post ({link})",
             f'⤵️ Reply to {html.escape(parent_label)}\'s <a href="{html.escape(link, quote=True)}">post</a>',
         )
-        echo_ids = await _send_post(app, room_id=echo_into, header=echo_header, relation=relation, tail=tail, **common)
+        # MSC4501's reply relation is for exactly this: a reply shown
+        # outside its thread. In the thread, the thread relation says it.
+        # (A reply that also quotes keeps its reply relation here.)
+        echo_relation = await social_relation(app, SOCIAL_REL_TYPE_REPLY, parent) or relation
+        echo_ids = await _send_post(
+            app, room_id=echo_into, header=echo_header, relation=echo_relation, tail=tail, **common
+        )
         if echo_ids:
             # Its own entry, so deleting the post redacts the echo too and
             # reacting to the echo acts on the same post.
