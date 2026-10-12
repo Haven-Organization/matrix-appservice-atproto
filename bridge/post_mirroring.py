@@ -55,7 +55,14 @@ from bridge.msc4501 import (
     social_relates_to,
 )
 from bridge.post_lookup import PostRef, locate_post_by_uri
-from bridge.previews import PREVIEW_TEXT_LIMIT, fetch_post_preview, post_text_of, quote_block, user_display
+from bridge.previews import (
+    PREVIEW_IMAGE_SIZE,
+    PREVIEW_TEXT_LIMIT,
+    fetch_post_preview,
+    post_text_of,
+    quote_block,
+    user_display,
+)
 from bridge.repository import MirroredPost, RemoteAccount
 from bridge.synapse_client import SynapseError
 
@@ -238,6 +245,7 @@ async def _send_post(
     relation: dict[str, Any] | None = None,
     extra_fields: dict[str, Any] | None = None,
     tail: tuple[str, str] | None = None,
+    preview_media: dict[str, Any] | None = None,
 ) -> list[str]:
     """Send one post's content into ``room_id`` as ``ghost`` -- always as
     ONE event, however many files the post has, so "the post" is a single
@@ -245,8 +253,10 @@ async def _send_post(
     captioned with the text; any further attachments are listed as links
     under "Other Attachments:" (or all of them under "Attachments:" if the
     first couldn't be embedded). ``header`` goes above the text and
-    ``tail`` (plain, HTML) below it. ``blob_owner`` is the ``(did, pds)``
-    its media is fetched from. Returns the event ID sent, as a list --
+    ``tail`` (plain, HTML) below it. ``preview_media`` (a quoted post's
+    image or video, as ``fetch_post_preview`` gives it) becomes the
+    event's attachment if the post has none of its own. ``blob_owner`` is
+    the ``(did, pds)`` its media is fetched from. Returns the event ID sent, as a list --
     empty if sending failed."""
     synapse = app.state.synapse
     config = app.state.config
@@ -273,7 +283,8 @@ async def _send_post(
     own_plain = "\n\n".join(plain_lines[1:] if header else plain_lines)
     own_html = "<br><br>".join(html_lines[1:] if header else html_lines)
     plain_body = "\n\n".join(plain_lines)
-    formatted_body = "<br><br>".join(html_lines)
+    # A header is a paragraph of its own; the content follows it directly.
+    formatted_body = (header[1] + own_html) if header else own_html
     if tail is not None:
         plain_body = f"{plain_body}\n\n{tail[0]}".strip()
         formatted_body += tail[1]
@@ -322,6 +333,15 @@ async def _send_post(
             )
             plain_body = f"{plain_body}\n\n{plain_section}" if plain_body else plain_section
             formatted_body = f"{formatted_body}<br><br>{html_section}" if formatted_body else html_section
+        if not embedded and preview_media is not None:
+            # A quote-post with no attachment of its own shows the quoted
+            # post's image or video (the same upload, at preview size).
+            content.update(
+                msgtype="m.video" if preview_media.get("video") else "m.image",
+                url=preview_media["mxc"],
+                filename=preview_media["filename"],
+                info={"mimetype": preview_media["mimetype"], "w": preview_media["width"], "h": preview_media["height"]},
+            )
         if plain_body:
             # On an image or video, a body distinct from the filename is
             # its caption (MSC2530).
@@ -436,19 +456,20 @@ async def mirror_post(
     elif parent_uri:
         parent_url = _at_uri_to_url(parent_uri)
         if parent_url:
-            header = (
-                f"↩ Replying to {parent_url}",
-                f'↩ Replying to <a href="{html.escape(parent_url, quote=True)}">{html.escape(parent_url)}</a>',
-            )
+            header = await _reply_header(app, parent_uri, parent_url)
     tail: tuple[str, str] | None = None
+    preview_media: dict[str, Any] | None = None
     quoted_uri = _quoted_uri(record.get("embed"))
     if quoted_uri:
-        tail, quote_relation = await _quoted_post_render(app, quoted_uri)
+        tail, quote_relation, preview_media = await _quoted_post_render(
+            app, quoted_uri, quoter_has_media=bool(_media_items(record.get("embed")))
+        )
         # A quote-post: MSC4501 treats it as a repost with commentary.
         relation = quote_relation
 
     event_ids = await _send_post(
-        app, room_id=room_id, header=header, relates_to=relates_to, relation=relation, tail=tail, **common
+        app, room_id=room_id, header=header, relates_to=relates_to, relation=relation, tail=tail,
+        preview_media=preview_media, **common
     )
     if not event_ids:
         return False
@@ -457,17 +478,21 @@ async def mirror_post(
     if echo_into is not None and parent is not None:
         # Cross-post into the replier's own room, pointing at the thread.
         link = matrix_event_link(app, room_id, relates_to["event_id"] if relates_to else parent.event_id)
-        parent_label = await _display_label(app, parent)
+        parent_name, parent_html = await user_display(app, parent.sender)
         echo_header = (
-            f"⤵️ Reply to {parent_label}'s post ({link})",
-            f'⤵️ Reply to {html.escape(parent_label)}\'s <a href="{html.escape(link, quote=True)}">post</a>',
+            f"⤵️ Reply to {parent_name}'s post:",
+            f'<p>⤵️ Reply to {parent_html}\'s <a href="{html.escape(link, quote=True)}">post</a>:</p>',
         )
+        # The plain text ends with the link to the thread ("post", above,
+        # carries it in the HTML).
+        echo_tail = (f"{tail[0]}\n\n{link}" if tail else link, tail[1] if tail else "")
         # MSC4501's reply relation is for exactly this: a reply shown
         # outside its thread. In the thread, the thread relation says it.
         # (A reply that also quotes keeps its reply relation here.)
         echo_relation = await social_relation(app, SOCIAL_REL_TYPE_REPLY, parent) or relation
         echo_ids = await _send_post(
-            app, room_id=echo_into, header=echo_header, relation=echo_relation, tail=tail, **common
+            app, room_id=echo_into, header=echo_header, relation=echo_relation, tail=echo_tail,
+            preview_media=preview_media, **common
         )
         if echo_ids:
             # Its own entry, so deleting the post redacts the echo too and
@@ -478,13 +503,32 @@ async def mirror_post(
     return True
 
 
-async def _display_label(app: FastAPI, ref: PostRef) -> str:
-    """A name for the author of a post that is in Matrix."""
-    try:
-        profile = await app.state.synapse.get_profile(ref.sender)
-    except SynapseError:
-        profile = {}
-    return str(profile.get("displayname") or ref.sender)
+async def _author_display(app: FastAPI, did: str) -> tuple[str, str] | None:
+    """A name for the account ``did``, and how it is written in HTML: a
+    user pill if it has a Matrix user here (a local account's owner, or a
+    ghost), else its handle in bold. ``None`` if it can't be looked up."""
+    repository = app.state.repository
+    account = await repository.get_account(did)
+    if account is not None:
+        return await user_display(app, account.matrix_user_id)
+    remote = await repository.get_remote_account(did)
+    if remote is not None:
+        return await user_display(app, remote.ghost_user_id)
+    identity = await resolve_did(app.state.http_client, did, plc_directory=app.state.config.atproto.plc_directory)
+    if identity is None:
+        return None
+    return f"@{identity.handle}", f"<strong>@{html.escape(identity.handle)}</strong>"
+
+
+async def _reply_header(app: FastAPI, parent_uri: str, parent_url: str) -> tuple[str, str]:
+    """The line above a reply whose parent isn't in Matrix, so couldn't be
+    threaded under it: "⤵️ Reply to X's post:", "post" linking to the
+    parent on Bluesky. The same line a cross-posted reply gets."""
+    link = f'<a href="{html.escape(parent_url, quote=True)}">'
+    author = await _author_display(app, parent_uri.removeprefix("at://").split("/", 1)[0])
+    if author is None:
+        return "⤵️ Reply to this post:", f"<p>⤵️ Reply to {link}this post</a>:</p>"
+    return f"⤵️ Reply to {author[0]}'s post:", f"<p>⤵️ Reply to {author[1]}'s {link}post</a>:</p>"
 
 
 async def import_post(app: FastAPI, uri: str, *, known_authors_only: bool = False) -> PostRef | None:
@@ -521,11 +565,19 @@ async def import_post(app: FastAPI, uri: str, *, known_authors_only: bool = Fals
     return await locate_post_by_uri(app, uri)
 
 
-async def _quoted_post_render(app: FastAPI, quoted_uri: str) -> tuple[tuple[str, str], dict[str, Any] | None]:
+async def _quoted_post_render(
+    app: FastAPI, quoted_uri: str, *, quoter_has_media: bool
+) -> tuple[tuple[str, str], dict[str, Any] | None, dict[str, Any] | None]:
     """What a quote-post shows of the post it quotes: a "🔁 reposted X's
     post" line -- "post" linking to the quoted post in Matrix when it is
-    there -- above a preview of it. Returns that as (plain, HTML), and the
-    MSC4501 repost relation if the quoted post is in Matrix."""
+    there -- above a preview of it. Returns that as (plain, HTML), the
+    MSC4501 repost relation if the quoted post is in Matrix, and the
+    quoted post's image or video if it has one.
+
+    That image or video becomes the quote-post's own attachment when the
+    quoter attached nothing (an event carries one attachment, and the
+    quoter's own wins). When they did (``quoter_has_media``), it is shown
+    inside the preview instead."""
     config = app.state.config
     policy = config.bridge.quote_import_policy
     if policy == "never":
@@ -533,8 +585,10 @@ async def _quoted_post_render(app: FastAPI, quoted_uri: str) -> tuple[tuple[str,
     else:
         quoted = await import_post(app, quoted_uri, known_authors_only=policy == "known")
     relation = None
+    media: dict[str, Any] | None = None
     if quoted is not None:
-        preview_text, full_content, _image, _video = await fetch_post_preview(app, quoted.room_id, quoted.event_id)
+        preview_text, full_content, image, video = await fetch_post_preview(app, quoted.room_id, quoted.event_id)
+        media = {**video, "video": True} if video is not None else image
         link = matrix_event_link(app, quoted.room_id, quoted.event_id)
         author_name, author_html = await user_display(app, quoted.sender)
         if config.bridge.set_msc4501_relates_to and full_content:
@@ -554,17 +608,24 @@ async def _quoted_post_render(app: FastAPI, quoted_uri: str) -> tuple[tuple[str,
         did = quoted_uri.removeprefix("at://").split("/", 1)[0]
         identity = await resolve_did(app.state.http_client, did, plc_directory=config.atproto.plc_directory)
         author_name = f"@{identity.handle}" if identity is not None else did
-        author_html = f'<a href="https://bsky.app/profile/{html.escape(did, quote=True)}">{html.escape(author_name)}</a>'
+        author_html = f"<strong>{html.escape(author_name)}</strong>"
         parts = quoted_uri.removeprefix("at://").split("/")
         if identity is not None and len(parts) == 3:
             response = await get_record(app.state.http_client, identity.pds, did, parts[1], parts[2])
             preview_text = str(((response or {}).get("value") or {}).get("text") or "")
             if len(preview_text) > PREVIEW_TEXT_LIMIT:
                 preview_text = preview_text[:PREVIEW_TEXT_LIMIT].rstrip() + "…"
-    quoted_plain, quoted_html = quote_block(preview_text)
+    quoted_plain, _ = quote_block(preview_text)
+    if not quoted_plain and media is not None:
+        quoted_plain = f"> {media['filename']}"
+    quoted_parts = [html.escape(preview_text).replace("\n", "<br>")] if preview_text else []
+    if media is not None and quoter_has_media:
+        image_html = f'<img src="{html.escape(media["mxc"], quote=True)}" width="{PREVIEW_IMAGE_SIZE}">'
+        quoted_parts.append(f"{image_html}<br>{html.escape(media['filename'])}")
+    quoted_html = f"<blockquote>{'<br>'.join(quoted_parts)}</blockquote>" if quoted_parts else ""
     plain = f"🔁 reposted {author_name}'s post:" + (f"\n{quoted_plain}" if quoted_plain else "") + f"\n{link}"
     formatted = f'<p>🔁 reposted {author_html}\'s <a href="{html.escape(link, quote=True)}">post</a></p>{quoted_html}'
-    return (plain, formatted), relation
+    return (plain, formatted), relation, media
 
 
 async def mirror_repost(app: FastAPI, remote: RemoteAccount, rkey: str, record: dict[str, Any]) -> bool:
