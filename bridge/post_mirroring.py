@@ -268,6 +268,10 @@ async def _send_post(
         plain_lines.append(plain)
         html_lines.append(formatted)
 
+    # The post's own content, without the header or tail the bridge puts
+    # around it: what an MSC4501 client shows in place of the body.
+    own_plain = "\n\n".join(plain_lines[1:] if header else plain_lines)
+    own_html = "<br><br>".join(html_lines[1:] if header else html_lines)
     plain_body = "\n\n".join(plain_lines)
     formatted_body = "<br><br>".join(html_lines)
     if tail is not None:
@@ -331,6 +335,13 @@ async def _send_post(
             content["m.relates_to"] = relates_to
         if relation:
             content[SOCIAL_RELATES_TO_FIELD] = relation
+            # A quote-post or a cross-posted reply: an MSC4501 client draws
+            # the related post itself, so it gets the author's own words
+            # alone, without the "reposted X's post" or "Reply to" line.
+            # Left out when there are no words of their own to give.
+            if own_plain and "formatted_body" in content:
+                content[SOCIAL_BODY_FIELD] = own_plain
+                content[SOCIAL_FORMATTED_BODY_FIELD] = own_html
         return [await synapse.send_message_event(room_id, content, as_user_id=ghost, ts=ts, event_type=event_type)]
     except SynapseError:
         logger.warning("Mirroring into %s failed", room_id, exc_info=True)

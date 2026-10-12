@@ -68,6 +68,7 @@ Rooms and events follow MSC4501 ("Rooms as Social Media Pages") the same way mat
 |---|---|---|
 | (always) | | Profile Rooms and Remote User Rooms are created with the `org.matrix.msc4501.social.profile` room type and an `org.matrix.msc4501.social.profile_user_id` state event naming whose profile the room is. |
 | `set_msc4501_relates_to` | on | Mirrored reposts and quote-posts, and replies cross-posted outside their thread, carry `org.matrix.msc4501.social.relates_to`. A reply inside its thread doesn't: the thread already says what it answers. |
+| (with the relation) | | Any event carrying that relation also carries `org.matrix.msc4501.social.body` / `social.formatted_body`: the author's own words alone (or, for a plain repost, the reposted post's text), without the "🔁 reposted X's post" or "⤵️ Reply to" line the bridge adds for other clients. Left out when there is no text. |
 | `use_msc4501_content_inline` | on | A mirrored repost says its own content is the reposted post, instead of repeating that content inside the relation. |
 | `quote_import_policy` | `known` | Whether a quote-post's target is imported into Matrix when it isn't there yet. |
 | `msc4144_per_message_profiles` | on | The repost/quote card the bot leaves in your Profile Room carries an MSC4144 per-message profile, so it shows as yours. |

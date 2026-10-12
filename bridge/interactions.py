@@ -152,9 +152,12 @@ async def _post_card(
     )
     if relation:
         content[SOCIAL_RELATES_TO_FIELD] = relation
-        if preview_text and caption is None:
-            content[SOCIAL_BODY_FIELD] = preview_text
-            content[SOCIAL_FORMATTED_BODY_FIELD] = html.escape(preview_text)
+        # What an MSC4501 client shows in place of the body: for a quote,
+        # the commentary alone; for a pure repost, the reposted post's text.
+        social_text = caption if caption is not None else preview_text
+        if social_text:
+            content[SOCIAL_BODY_FIELD] = social_text
+            content[SOCIAL_FORMATTED_BODY_FIELD] = html.escape(social_text)
     profile = await per_message_profile(request, account)
     if profile is not None:
         content[PER_MESSAGE_PROFILE_FIELD] = profile
