@@ -15,10 +15,11 @@ import yaml
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 CONFIG_PATH_ENV_VAR = "BRIDGE_CONFIG"
-# Two of Bluesky's public Jetstream instances, in different regions.
+# Bluesky's current ("v2") public Jetstream instances, one per region. They
+# still serve the original /subscribe interface the bridge speaks.
 DEFAULT_JETSTREAM_URLS = (
-    "wss://jetstream1.us-east.bsky.network/subscribe",
-    "wss://jetstream2.us-west.bsky.network/subscribe",
+    "wss://jetstream.us-east.bsky.network/subscribe",
+    "wss://jetstream.us-west.bsky.network/subscribe",
 )
 
 

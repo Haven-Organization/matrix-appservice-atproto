@@ -280,7 +280,7 @@ Relays asked to crawl this PDS. `bsky.network` is Bluesky's, which is what makes
 
 #### `atproto.jetstream_urls`
 
-**Default:** `wss://jetstream1.us-east.bsky.network/subscribe` and `wss://jetstream2.us-west.bsky.network/subscribe`
+**Default:** `wss://jetstream.us-east.bsky.network/subscribe` and `wss://jetstream.us-west.bsky.network/subscribe`
 
 Where followed accounts' new posts, reposts and likes are received from: a list of Jetstream endpoints, each filtered to just the accounts followed here. The bridge listens to all of them at once and acts on an event the first time any delivers it. Keep at least two: a single endpoint can go quiet for some accounts without reporting an error, and everything it misses then arrives only at the next catch-up check (`atproto.catchup_minutes`).
 

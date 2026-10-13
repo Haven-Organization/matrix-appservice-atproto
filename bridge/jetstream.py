@@ -262,15 +262,18 @@ class JetstreamConsumer:
 
     async def _cursor(self) -> str | None:
         """This endpoint's saved position. Positions are each endpoint's
-        own clock, so they are kept apart; one saved before there were
-        several endpoints is close enough to start from."""
+        own clock, so they are kept apart; an endpoint with none yet (one
+        just added to the config) starts from the latest of any endpoint,
+        which is close enough."""
         repository = self._app.state.repository
         return await repository.get_value(self._cursor_key) or await repository.get_value(_CURSOR_KEY)
 
     async def _advance_cursor(self, time_us: int) -> None:
-        saved = await self._cursor()
-        if saved is None or time_us > int(saved):
-            await self._app.state.repository.set_value(self._cursor_key, str(time_us))
+        repository = self._app.state.repository
+        for key in (self._cursor_key, _CURSOR_KEY):
+            saved = await repository.get_value(key)
+            if saved is None or time_us > int(saved):
+                await repository.set_value(key, str(time_us))
 
     def _is_repeat(self, event: dict[str, Any]) -> bool:
         """Whether another endpoint already delivered this event. Noted
