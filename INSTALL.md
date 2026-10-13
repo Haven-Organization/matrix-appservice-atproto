@@ -53,11 +53,12 @@ If your provider has no plugin or API, [acme-dns](https://github.com/joohoi/acme
 - A **wildcard block** (`server_name *.example.org`) that passes only `/.well-known/atproto-did` and the bridge's own routing check to the bridge. This is what makes handles resolve.
 - A **PDS block** (`server_name pds.example.org`) that passes `/xrpc/` (including the long-lived firehose WebSocket relays connect to), `/media/` and `/.well-known/did.json`.
 
-Copy them in, replace `example.org` and the certificate paths, then `nginx -t && systemctl reload nginx`. Three things in that file matter and are easy to lose when adapting it:
+Copy them in, replace `example.org` and the certificate paths, then `nginx -t && systemctl reload nginx`. Four things in that file matter and are easy to lose when adapting it:
 
 - `proxy_set_header Host $host;` is required. The bridge decides whose DID to return from the `Host` header alone.
 - The `/xrpc/` location needs the WebSocket upgrade headers and long timeouts, or Bluesky's relay can't stay subscribed and your users' posts never leave the server.
 - Nothing under `/_bridge/admin` or `/_matrix/` should be reachable publicly. The example returns 404 for everything it doesn't list.
+- Leave cross-origin (CORS) handling to the bridge. It answers `OPTIONS` requests and sets `Access-Control-Allow-Origin: *` on `/xrpc/` and `/.well-known/` itself, which is what lets browser-based ATProto tools read your server. Don't add an `add_header Access-Control-Allow-Origin` of your own to these blocks (a doubled header is rejected by browsers) and don't answer or block `OPTIONS` in nginx.
 
 Your existing server blocks keep working: nginx always prefers a block with an exact `server_name` over the wildcard one.
 
@@ -159,10 +160,26 @@ Wildcard handle routing for *.example.org reaches this bridge
 A warning there instead means step 1, 2 or 3 isn't right yet, and no handle will be granted until it is. The PDS hostname can be checked by hand:
 
 ```sh
+# The PDS answers, and names itself did:web:pds.example.org
 curl https://pds.example.org/xrpc/com.atproto.server.describeServer
+# Its identity document
+curl https://pds.example.org/.well-known/did.json
+# Browsers on other sites may read it: expect "access-control-allow-origin: *", exactly once
+curl -si -H 'Origin: https://example.com' https://pds.example.org/.well-known/did.json | grep -i access-control
 ```
 
 Then, from any Matrix client, invite the bot (`@bluesky:example.org` by default) to a room and send `]create profile`.
+
+Once an account exists, these confirm the rest of the network can find it (ATProto has no `nodeinfo`; this is what other servers look at instead). Replace `alice` with the account's handle:
+
+```sh
+# The handle's hostname names the account: prints its did:plc:...
+curl https://alice.example.org/.well-known/atproto-did
+# Bluesky's relay is subscribed to your PDS: expect "status":"active"
+curl 'https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=pds.example.org'
+# Bluesky resolves the handle to the same DID
+curl 'https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=alice.example.org'
+```
 
 ## Handles
 

@@ -12,6 +12,12 @@
 #     issues those via the DNS-01 challenge, e.g.:
 #       certbot certonly --dns-<provider> -d '*.example.org'
 #
+# Cross-origin access (CORS): the bridge answers OPTIONS requests and sets
+# Access-Control-Allow-Origin on /xrpc/ and /.well-known/ itself, which is
+# what lets browser-based ATProto tools read this server. Don't add_header
+# an Access-Control-Allow-Origin of your own here (browsers reject a doubled
+# header), and don't answer or block OPTIONS in nginx.
+#
 # Existing subdomains are unaffected: an explicit DNS record always beats the
 # wildcard record, and nginx always prefers a server block with an exact
 # server_name (matrix.example.org, ...) over this wildcard one. Those names
