@@ -58,7 +58,7 @@ Besides your Profile Room, the bridge keeps two rooms for every user. Their name
 
 Each names who did it with a user pill, links "your post" to your message in Matrix, and shows a short preview of the post it is about. If that post is an image or video, the notification is itself that image or video, shown small, with the text as its caption.
 
-These are kept out of your Profile Room so that anyone else you invite there can't see who is interacting with you. They are ordinary messages that tag nobody, so whether the room notifies is entirely your own per-room setting. They are checked every `atproto.notification_poll_seconds` (default 30).
+These are kept out of your Profile Room so that anyone else you invite there can't see who is interacting with you. They are ordinary messages that tag nobody, so whether the room notifies is entirely your own per-room setting. They are checked every `atproto.notification_poll_seconds` (default 30); when the account that did it is one somebody here follows, the notification is sent the moment the like, repost, reply, quote or mention itself arrives rather than at the next check.
 
 ## MSC4501
 

@@ -11,12 +11,18 @@ when a client asks for its notifications.
 Each account's position is remembered, so a notification is sent once. The
 first time an account is checked, whatever is already there is skipped
 rather than replayed.
+
+The AppView takes a few seconds to report something. When whoever did it
+is followed here, the live feed has already delivered their record, so the
+notification is made from that at once (``notify_directly``) and the
+AppView's later report of the same record is passed over.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 from typing import Any
 
@@ -25,6 +31,7 @@ from fastapi import FastAPI
 from bridge.atproto.identity import post_url, resolve_did
 from bridge.atproto.keys import SigningKey
 from bridge.atproto.service_auth import service_auth_token
+from bridge.matrix_records import POST_COLLECTION
 from bridge.notifications import notify_user
 from bridge.post_lookup import locate_post_by_uri
 from bridge.post_mirroring import matrix_event_link, mirror_post
@@ -36,6 +43,12 @@ from bridge.repository import Account, RemoteAccount
 logger = logging.getLogger(__name__)
 
 _LIST_METHOD = "app.bsky.notification.listNotifications"
+_BLOCK_COLLECTION = "app.bsky.graph.block"
+_LIKE_COLLECTION = "app.bsky.feed.like"
+_REPOST_COLLECTION = "app.bsky.feed.repost"
+# How many records an account was last notified about are remembered, to
+# tell the AppView's report of one from the live feed's.
+_DELIVERED_KEPT = 200
 
 # The interactions that produce a notification, and how each reads after
 # the name of whoever did it. Anything else the AppView reports is ignored.
@@ -55,6 +68,26 @@ _REASONS_WITH_TEXT = ("reply", "mention", "quote")
 
 def _seen_key(did: str) -> str:
     return f"notifications_seen:{did}"
+
+
+def _delivered_key(did: str) -> str:
+    return f"notifications_delivered:{did}"
+
+
+async def _delivered(app: FastAPI, did: str) -> list[str]:
+    """Addresses of the records ``did`` was most recently notified about,
+    oldest first."""
+    try:
+        uris = json.loads(await app.state.repository.get_value(_delivered_key(did)) or "[]")
+    except ValueError:
+        return []
+    return uris if isinstance(uris, list) else []
+
+
+async def _note_delivered(app: FastAPI, did: str, uri: str) -> None:
+    uris = [known for known in await _delivered(app, did) if known != uri]
+    uris.append(uri)
+    await app.state.repository.set_value(_delivered_key(did), json.dumps(uris[-_DELIVERED_KEPT:]))
 
 
 def _position(notification: dict[str, Any]) -> str:
@@ -214,7 +247,8 @@ def _poll_lock(app: FastAPI, did: str) -> asyncio.Lock:
 
 
 async def poll_account(app: FastAPI, account: Account) -> int:
-    """Send any new notifications for ``account``. Returns how many.
+    """Send any new notifications for ``account``. Returns how many were
+    new, counting those the live feed had already delivered.
     One check per account at a time: the regular round and an early
     check (``nudge_notifications``) overlapping would send things twice."""
     async with _poll_lock(app, account.did):
@@ -233,11 +267,12 @@ async def _poll_account(app: FastAPI, account: Account) -> int:
         # First look at this account: start from here, don't replay history.
         await repository.set_value(key, newest)
         return 0
-    sent = 0
+    handled = 0
     for notification in sorted(notifications, key=_position):
         if _position(notification) <= seen:
             continue
         reason = notification.get("reason")
+        uri = str(notification.get("uri", ""))
         # A reply is threaded into the Profile Room first, so that its
         # notification can link to (and preview) it there.
         if reason == "reply":
@@ -245,15 +280,19 @@ async def _poll_account(app: FastAPI, account: Account) -> int:
                 await _mirror_reply(app, notification)
             except Exception:
                 logger.exception("Mirroring reply %s failed", notification.get("uri"))
-        content = await build_notification(app, account, notification)
-        if content is not None and await notify_user(app, account.matrix_user_id, content) is not None:
-            sent += 1
+        if uri in await _delivered(app, account.did):
+            handled += 1  # the live feed got there first
+        else:
+            content = await build_notification(app, account, notification)
+            if content is not None and await notify_user(app, account.matrix_user_id, content) is not None:
+                handled += 1
+                await _note_delivered(app, account.did, uri)
         try:
             if reason in _REACTION_EMOJI:
                 await mirror_reaction(
                     app,
                     actor_did=str((notification.get("author") or {}).get("did", "")),
-                    record_uri=str(notification.get("uri", "")),
+                    record_uri=uri,
                     subject_uri=str(notification.get("reasonSubject", "")),
                     emoji=_REACTION_EMOJI[reason],
                 )
@@ -262,7 +301,7 @@ async def _poll_account(app: FastAPI, account: Account) -> int:
         # Advance per notification, so a failure part-way doesn't resend
         # the ones already delivered.
         await repository.set_value(key, _position(notification))
-    return sent
+    return handled
 
 
 # After the live feed shows something aimed at a local account, its
@@ -302,6 +341,93 @@ def addressed_dids(record: dict[str, Any]) -> set[str]:
     return dids
 
 
+def _post_uri(uri: Any) -> str:
+    return uri if isinstance(uri, str) and f"/{POST_COLLECTION}/" in uri else ""
+
+
+def direct_reasons(collection: str, record: dict[str, Any]) -> dict[str, tuple[str, str]]:
+    """Whom a record notifies and how, as far as the record alone says:
+    each account's DID with the reason and the post of theirs it is about
+    (none for a mention). One reason per account, as the AppView has it:
+    a reply before a quote before a mention."""
+    found: dict[str, tuple[str, str]] = {}
+
+    def add(reason: str, uri: str, did: str = "") -> None:
+        did = did or _did_of(uri)
+        if did:
+            found.setdefault(did, (reason, uri))
+
+    if collection in (_LIKE_COLLECTION, _REPOST_COLLECTION):
+        subject = record.get("subject")
+        if isinstance(subject, dict):
+            add("like" if collection == _LIKE_COLLECTION else "repost", _post_uri(subject.get("uri")))
+    elif collection == POST_COLLECTION:
+        reply = record.get("reply")
+        if isinstance(reply, dict) and isinstance(reply.get("parent"), dict):
+            add("reply", _post_uri(reply["parent"].get("uri")))
+        embed = record.get("embed")
+        quoted = embed.get("record") if isinstance(embed, dict) else None
+        if isinstance(quoted, dict):
+            inner = quoted.get("record") if isinstance(quoted.get("record"), dict) else quoted
+            add("quote", _post_uri(inner.get("uri")))
+        for facet in record.get("facets") or []:
+            for feature in (facet.get("features") or []) if isinstance(facet, dict) else []:
+                if isinstance(feature, dict) and isinstance(feature.get("did"), str):
+                    add("mention", "", feature["did"])
+    return found
+
+
+async def _blocks(app: FastAPI, account: Account, did: str) -> bool:
+    """Whether ``account`` blocks ``did`` -- the AppView reports nothing
+    from a blocked account, so neither does the shortcut."""
+    for row in await app.state.repository.list_records(account.did):
+        if row.collection == _BLOCK_COLLECTION and json.loads(row.source).get("record", {}).get("subject") == did:
+            return True
+    return False
+
+
+async def _ghost_name(app: FastAPI, remote: RemoteAccount) -> str:
+    """The display name ``remote``'s ghost was given, without the handle
+    that follows it; empty if it has none."""
+    try:
+        name = str((await app.state.synapse.get_profile(remote.ghost_user_id)).get("displayname") or "")
+    except Exception:
+        return ""
+    name = name.removesuffix(f"(@{remote.handle})").strip()
+    return "" if name.startswith("@") else name
+
+
+async def notify_directly(
+    app: FastAPI, remote: RemoteAccount, collection: str, rkey: str, record: dict[str, Any], *, cid: str = ""
+) -> None:
+    """The live feed just delivered ``record`` from a followed account. If
+    it is something a local account is notified of, send that notification
+    now, built from the record itself, instead of waiting for the AppView
+    to report it."""
+    if app.state.config.atproto.notification_poll_seconds <= 0:
+        return
+    uri = f"at://{remote.did}/{collection}/{rkey}"
+    author = {"did": remote.did, "handle": remote.handle}
+    for did, (reason, subject) in direct_reasons(collection, record).items():
+        account = await app.state.repository.get_account(did)
+        if account is None or not (account.plc_registered and account.active):
+            continue
+        try:
+            async with _poll_lock(app, did):
+                if uri in await _delivered(app, did) or await _blocks(app, account, remote.did):
+                    continue
+                author.setdefault("displayName", await _ghost_name(app, remote))
+                notification = {
+                    "uri": uri, "cid": cid, "reason": reason, "reasonSubject": subject, "record": record,
+                    "author": author,
+                }
+                content = await build_notification(app, account, notification)
+                if content is not None and await notify_user(app, account.matrix_user_id, content) is not None:
+                    await _note_delivered(app, did, uri)
+        except Exception:
+            logger.exception("Notifying %s of %s failed", did, uri)
+
+
 async def _check_early(app: FastAPI, account: Account) -> None:
     try:
         for delay in _NUDGE_DELAYS:
@@ -319,8 +445,9 @@ async def _check_early(app: FastAPI, account: Account) -> None:
 async def nudge_notifications(app: FastAPI, record: dict[str, Any]) -> None:
     """The live feed just delivered ``record``. If it is aimed at a local
     account, check that account's notifications now instead of waiting for
-    the next regular round, so the notification arrives with the event
-    rather than up to ``notification_poll_seconds`` after it. (The live
+    the next regular round: that settles the AppView's own report of what
+    ``notify_directly`` has just sent, and finds whatever the record alone
+    doesn't show (a reply further down a local user's thread). (The live
     feed only carries followed accounts; everyone else's interactions are
     still found by the regular round.)"""
     if app.state.config.atproto.notification_poll_seconds <= 0:
