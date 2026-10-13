@@ -19,6 +19,8 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from bridge.atproto.handle_probe import HandleRoutingProber, ProbeResult
 from bridge.atproto.handles import HandlePolicy, infrastructure_labels
@@ -103,6 +105,27 @@ async def _ensure_bot_user(synapse: SynapseClient, config: BridgeConfig) -> None
             await synapse.set_avatar_url(mxid, avatar)
     except SynapseError:
         logger.warning("Could not update the bot's profile", exc_info=True)
+
+
+class PublicCors:
+    """Lets web pages on any site read the PDS's public endpoints, as
+    every other PDS does. Tools that run in the browser -- repository
+    explorers, handle checkers -- fetch ``/xrpc/...`` and
+    ``/.well-known/...`` straight from the visitor's browser, which
+    refuses to show them an answer that doesn't carry this permission, so
+    without it they report the server as unreachable. Nothing here relies
+    on cookies, so allowing every origin gives nothing away. The Matrix
+    and admin routes are left alone: no browser has business there."""
+
+    _PUBLIC_PREFIXES = ("/xrpc/", "/.well-known/")
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+        self._cors = CORSMiddleware(app, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], max_age=86400)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        public = scope["type"] == "http" and str(scope.get("path", "")).startswith(self._PUBLIC_PREFIXES)
+        await (self._cors if public else self._app)(scope, receive, send)
 
 
 def build_handle_policy(config: BridgeConfig) -> HandlePolicy:
@@ -259,6 +282,7 @@ def create_app(
         description="Native Matrix <-> ATProto bridge",
         lifespan=lifespan,
     )
+    app.add_middleware(PublicCors)
     app.include_router(atproto_router)
     app.include_router(xrpc_router)
     app.include_router(admin_router)
