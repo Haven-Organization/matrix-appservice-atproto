@@ -314,14 +314,19 @@ async def _catch_up_reposts(app: FastAPI, remote: RemoteAccount) -> int:
     return mirrored
 
 
-async def _mirror_records(app: FastAPI, remote: RemoteAccount, records: list[dict]) -> int:
+async def _mirror_records(
+    app: FastAPI, remote: RemoteAccount, records: list[dict], *, import_conversation: bool = False
+) -> int:
     """Mirror listed records oldest first, so they read in order."""
     mirrored = 0
     for item in sorted(records, key=lambda item: str(item.get("uri", ""))):
         rkey = str(item.get("uri", "")).rsplit("/", 1)[-1]
         if rkey and isinstance(item.get("value"), dict):
             try:
-                mirrored += await mirror_post(app, remote, rkey, item["value"], cid=str(item.get("cid", "")))
+                mirrored += await mirror_post(
+                    app, remote, rkey, item["value"], cid=str(item.get("cid", "")),
+                    import_conversation=import_conversation,
+                )
             except Exception:
                 logger.exception("Mirroring %s of %s failed", rkey, remote.did)
             await note_post_seen(app, remote.did, rkey)
@@ -349,7 +354,8 @@ async def catch_up(app: FastAPI, remote: RemoteAccount) -> int:
         return await backfill(app, remote, app.state.config.atproto.follow_backfill_count)
     records = await list_records(app.state.http_client, remote.pds, remote.did, POST_COLLECTION, _CATCH_UP_WINDOW)
     newer = [item for item in records if str(item.get("uri", "")).rsplit("/", 1)[-1] > mark]
-    mirrored = await _mirror_records(app, remote, newer) + await _catch_up_reposts(app, remote)
+    # Posts the live feed missed are new posts all the same.
+    mirrored = await _mirror_records(app, remote, newer, import_conversation=True) + await _catch_up_reposts(app, remote)
     if mirrored:
         logger.info("Caught up %d post(s) of %s the live feed didn't deliver", mirrored, remote.handle)
     return mirrored

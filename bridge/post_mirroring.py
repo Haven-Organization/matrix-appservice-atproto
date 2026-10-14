@@ -17,7 +17,12 @@ matrix-appservice-activitypub:
   followed here, an annotated copy ("⤵️ Reply to X's post") is also
   cross-posted into their own room, so that room stays a complete
   timeline of the account.
-- A reply to a post that isn't in Matrix goes in the replier's own room,
+- A followed account's new reply to a post that isn't in Matrix brings
+  the conversation in first: its root is imported into the root author's
+  room (made for them if need be) and the posts between threaded under
+  it, and the reply is then threaded and cross-posted as above.
+- Any other reply to a post that isn't in Matrix (one met in a backfill,
+  or whose conversation can't be fetched) goes in the replier's own room,
   headed by a link to what it answers.
 - A repost goes in the reposter's room as one event, "🔁 reposted X's
   post:" above the reposted post's own content, with "post" linking to
@@ -41,7 +46,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from bridge.atproto.identity import get_blob, get_record, post_url, resolve_did
+from bridge.atproto.identity import _PUBLIC_APPVIEW, fetch_public, get_blob, get_record, post_url, resolve_did
 from bridge.matrix_records import POST_COLLECTION
 from bridge.msc4501 import (
     EXTERNAL_HANDLE_FIELD,
@@ -401,6 +406,7 @@ async def mirror_post(
     *,
     cid: str = "",
     thread_root: str | None = None,
+    import_conversation: bool = False,
 ) -> bool:
     """Mirror one post by ``remote`` (``record`` in its JSON form), as
     ``remote``'s ghost. Returns False if it was already mirrored or there
@@ -410,7 +416,9 @@ async def mirror_post(
     in Matrix (see the module docstring for the placement rules).
     ``thread_root`` forces it into the Matrix thread under that event in
     ``remote.room_id`` instead -- used when the caller has already worked
-    out which conversation it is fetching.
+    out which conversation it is fetching. ``import_conversation`` says
+    this is a new post as it happens: a reply by a followed account to
+    something not in Matrix then brings that conversation in first.
     """
     repository = app.state.repository
     uri = f"at://{remote.did}/{POST_COLLECTION}/{rkey}"
@@ -423,6 +431,10 @@ async def mirror_post(
     root = reply.get("root") or {}
     root_uri, root_cid = str(root.get("uri", "")), str(root.get("cid", ""))
     parent = await locate_post_by_uri(app, parent_uri) if parent_uri else None
+    if parent is None and parent_uri and thread_root is None and import_conversation:
+        own = await repository.get_remote_account(remote.did)
+        if own is not None and own.room_id == remote.room_id:
+            parent = await _import_conversation(app, parent_uri)
     common = {
         "ghost": ghost,
         "handle": remote.handle,
@@ -529,6 +541,68 @@ async def _reply_header(app: FastAPI, parent_uri: str, parent_url: str) -> tuple
     if author is None:
         return "⤵️ Reply to this post:", f"<p>⤵️ Reply to {link}this post</a>:</p>"
     return f"⤵️ Reply to {author[0]}'s post:", f"<p>⤵️ Reply to {author[1]}'s {link}post</a>:</p>"
+
+
+# How far up a reply's conversation is fetched when bringing it in.
+_ANCESTOR_LIMIT = 25
+
+
+async def _import_conversation(app: FastAPI, parent_uri: str) -> PostRef | None:
+    """Bring the conversation a reply belongs to into Matrix, up to and
+    including the post it answers (``parent_uri``), as
+    matrix-appservice-activitypub does: the conversation's root is
+    imported into its author's room (made for them if need be, nobody
+    invited), and each post between is threaded under it by its own
+    author's ghost. Returns where the parent is, or ``None`` if the
+    conversation couldn't be fetched -- the reply is then shown on its
+    own, headed by a link."""
+    response = await fetch_public(
+        app.state.http_client,
+        f"{_PUBLIC_APPVIEW}/xrpc/app.bsky.feed.getPostThread",
+        params={"uri": parent_uri, "depth": 0, "parentHeight": _ANCESTOR_LIMIT},
+        max_bytes=5_000_000,
+    )
+    node = (response.json() if response is not None else {}).get("thread")
+    chain: list[dict[str, Any]] = []
+    while isinstance(node, dict) and isinstance(node.get("post"), dict):
+        chain.append(node["post"])
+        node = node.get("parent")
+    chain.reverse()  # root (or as far up as was fetched) first
+    if not chain or str(chain[-1].get("uri", "")) != parent_uri:
+        return None
+    # Imported here: bridge.remote_accounts itself builds on this module.
+    from bridge.remote_accounts import ensure_ghost
+
+    repository = app.state.repository
+    previous: PostRef | None = None
+    for post in chain:
+        uri = str(post.get("uri", ""))
+        found = await locate_post_by_uri(app, uri)
+        if found is None and previous is None:
+            found = await import_post(app, uri)  # the top of the conversation
+        elif found is None and previous is not None and isinstance(post.get("record"), dict):
+            did, _, rkey = uri.removeprefix("at://").partition(f"/{POST_COLLECTION}/")
+            try:
+                author = await repository.get_remote_account(did)
+                if author is None:
+                    if await repository.get_account(did) is not None:
+                        return None  # a local post that isn't in Matrix can't be made to be
+                    identity = await resolve_did(
+                        app.state.http_client, did, plc_directory=app.state.config.atproto.plc_directory
+                    )
+                    if identity is None:
+                        return None
+                    ghost, *_ = await ensure_ghost(app, identity)
+                    # Not followed here, so no room of their own: only the thread.
+                    author = RemoteAccount(did, identity.handle, identity.pds, ghost, previous.room_id)
+                await mirror_post(app, author, rkey, post["record"], cid=str(post.get("cid", "")))
+            except SynapseError:
+                logger.info("Could not bring %s into its conversation", uri, exc_info=True)
+            found = await locate_post_by_uri(app, uri)
+        if found is None:
+            return None
+        previous = found
+    return previous
 
 
 async def import_post(app: FastAPI, uri: str, *, known_authors_only: bool = False) -> PostRef | None:

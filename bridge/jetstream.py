@@ -112,7 +112,9 @@ async def handle_event(app: FastAPI, event: dict[str, Any], accounts: dict[str, 
     if collection == PROFILE_COLLECTION and operation in ("create", "update"):
         await _refresh(app, remote)
     elif collection == POST_COLLECTION and operation == "create" and isinstance(commit.get("record"), dict):
-        await mirror_post(app, remote, rkey, commit["record"], cid=str(commit.get("cid", "")))
+        await mirror_post(
+            app, remote, rkey, commit["record"], cid=str(commit.get("cid", "")), import_conversation=True
+        )
         await note_post_seen(app, remote.did, rkey)
         await _notify(app, remote, collection, rkey, commit)
     elif collection == POST_COLLECTION and operation == "delete":
