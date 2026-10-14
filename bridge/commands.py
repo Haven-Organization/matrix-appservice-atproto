@@ -49,7 +49,13 @@ from bridge.profile_sync import sync_profile_record
 from bridge.admins import is_admin
 from bridge.chat import ChatError, ensure_declaration, start_chat
 from bridge.profile_rooms import create_profile_room
-from bridge.remote_accounts import backfill, backfill_thread, ensure_remote_account, refresh_remote_account
+from bridge.remote_accounts import (
+    backfill,
+    backfill_thread,
+    ensure_remote_account,
+    refresh_remote_account,
+    sync_remote_settings,
+)
 from bridge.spaces import add_room_to_space
 from bridge.repository import Account, RemoteAccount
 from bridge.synapse_client import SynapseError
@@ -317,8 +323,8 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 ),
                 (
                     f"{p}refresh [handle.example.com]",
-                    "Re-read an account's handle, name, avatar and bio. With no argument, the account whose "
-                    "room this is.",
+                    "Server admins: re-read an account's handle, name, avatar and bio, and bring its room and ghost "
+                    "into line with the current settings. With no argument, the account whose room this is.",
                 ),
             ],
         ),
@@ -876,7 +882,15 @@ async def _handle_chat(request: Request, *, sender: str, room_id: str, argument:
 
 
 async def _handle_refresh(request: Request, *, sender: str, room_id: str, argument: str) -> None:
+    """Re-read a remote account and bring everything kept in sync with it
+    up to date now, as matrix-appservice-activitypub's ``;refresh`` does:
+    its ghost's and room's name, avatar, bio and banner, and the room and
+    ghost brought into line with the current settings either way (see
+    ``sync_remote_settings``). Server admins only."""
     app = request.app
+    if not await is_admin(app, sender):
+        await notice(request, room_id, "Only a server admin can refresh an account.")
+        return
     identity = await _resolve_target(request, room_id=room_id, argument=argument, usage="refresh handle.example.com")
     if identity is None:
         return
@@ -885,4 +899,5 @@ async def _handle_refresh(request: Request, *, sender: str, room_id: str, argume
         await notice(request, room_id, f"Nobody here follows @{identity.handle}, so there's nothing to refresh.")
         return
     remote = await refresh_remote_account(app, remote, identity)
+    await sync_remote_settings(app, remote)
     await notice(request, room_id, f"Refreshed @{remote.handle}.")

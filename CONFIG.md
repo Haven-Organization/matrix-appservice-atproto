@@ -92,7 +92,7 @@ Enables the operator HTTP endpoints under `/_bridge/admin` (create an account, w
 
 ### Room access
 
-Same settings, names and defaults as matrix-appservice-activitypub. Existing rooms are brought into line with them when the bridge starts.
+Same settings, names and defaults as matrix-appservice-activitypub. Existing rooms are brought into line with them when the bridge starts, and a single Remote User Room at once by `]refresh`.
 
 #### `bridge.ghost_room_join_rule`
 

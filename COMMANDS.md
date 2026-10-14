@@ -207,9 +207,17 @@ Blocking, and repairing or refilling rooms.
 
 **Syntax:** `]refresh` inside a Remote User Room, or `]refresh handle.example.com` anywhere.
 
-**What it does:** Re-reads the account's identity and profile and applies them: handle, display name, avatar, bio and banner on both the ghost user and the room.
+**What it does:** Re-reads the account's identity and profile and brings everything the bridge keeps in sync with it up to date now, rather than waiting for the live feed to report a change:
 
-**Notes:** A ghost's Matrix ID is derived from the account's DID, not its handle, so it never changes when the handle does.
+- The ghost's handle, display name and avatar.
+- The room's name, avatar, topic (bio) and banner.
+- The room's MSC4501 owner (`org.matrix.msc4501.social.profile_user_id`).
+- The ghost's MSC4501 profile room and MSC4503 handle profile fields, brought into line with `bridge.set_msc4501_profile_room` and `bridge.msc4503_external_handle` either way: set if the setting wants them, removed if it no longer does.
+- The room's join rule and history visibility, brought into line with `bridge.ghost_room_join_rule` and `bridge.world_readable_remote_rooms`.
+
+**Who can run it:** Server admins only (`bridge.admins`, or a Synapse server admin if `synapse.admin_token` is set), as in matrix-appservice-activitypub.
+
+**Notes:** Best-effort per piece: one part failing doesn't stop the rest. A ghost's Matrix ID is derived from the account's DID, not its handle, so it never changes when the handle does. Every Remote User Room is also brought into line with the settings each time the bridge starts.
 
 ---
 

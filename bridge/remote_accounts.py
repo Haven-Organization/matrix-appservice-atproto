@@ -166,61 +166,61 @@ async def _converge_state(app: FastAPI, room_id: str, event_type: str, key: str,
         logger.info("Could not set %s in %s", event_type, room_id, exc_info=True)
 
 
-async def apply_room_access(app: FastAPI) -> None:
-    """Bring existing rooms into line with the access settings: every
-    Remote User Room's join rule and history visibility, and every local
-    Profile Room's join rule. Only what differs is written."""
+async def sync_remote_settings(app: FastAPI, remote: RemoteAccount) -> None:
+    """Bring an account's ghost and Remote User Room into line with the
+    current settings, either way: the room's MSC4501 owner, join rule and
+    history visibility, and the ghost's MSC4501 profile room and MSC4503
+    handle profile fields -- set where a setting wants them, removed where
+    it no longer does. Only what differs is written; each piece is
+    best-effort."""
+    config = app.state.config
+    synapse = app.state.synapse
+    ghost, room_id = remote.ghost_user_id, remote.room_id
+    await _converge_state(app, room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, "user_id", ghost)
+    await _converge_state(app, room_id, "m.room.join_rules", "join_rule", config.bridge.ghost_room_join_rule)
+    await _converge_state(
+        app, room_id, "m.room.history_visibility", "history_visibility", remote_room_history_visibility(app)
+    )
+    wanted: dict[str, Any] = {
+        SOCIAL_PROFILE_ROOM_FIELD: (
+            {"room_id": room_id, "via": [config.synapse.server_name]} if config.bridge.set_msc4501_profile_room else None
+        ),
+        EXTERNAL_HANDLE_FIELD: (
+            external_handle_value(config, handle=remote.handle)
+            if config.bridge.msc4503_external_handle in ("profile", "both")
+            else None
+        ),
+    }
+    try:
+        profile = await synapse.get_profile(ghost)
+    except SynapseError:
+        profile = {}
+    for key, value in wanted.items():
+        if profile.get(key) == value:
+            continue
+        try:
+            if value is None:
+                await synapse.delete_profile_field(ghost, key)
+            else:
+                await synapse.set_profile_field(ghost, key, value)
+        except SynapseError:
+            logger.info("Could not update %s for %s", key, ghost, exc_info=True)
+
+
+async def apply_room_settings(app: FastAPI) -> None:
+    """At startup, bring every existing Remote User Room and its ghost
+    (see ``sync_remote_settings``) and every local Profile Room's join rule
+    into line with the current settings, so a setting changed or added
+    since they were made applies to them too."""
     config = app.state.config
     repository = app.state.repository
     for remote in await repository.list_remote_accounts():
-        await _converge_state(app, remote.room_id, "m.room.join_rules", "join_rule", config.bridge.ghost_room_join_rule)
-        await _converge_state(
-            app, remote.room_id, "m.room.history_visibility", "history_visibility", remote_room_history_visibility(app)
-        )
+        await sync_remote_settings(app, remote)
     for account in await repository.list_accounts():
         if account.profile_room_id:
             await _converge_state(
                 app, account.profile_room_id, "m.room.join_rules", "join_rule", config.bridge.local_profile_room_join_rule
             )
-
-
-async def apply_ghost_profiles(app: FastAPI) -> None:
-    """Bring every account with a room here into line with the current
-    settings, so ghosts and rooms made before a setting was turned on (or
-    before the bridge set something at all) carry it too: the room's
-    MSC4501 owner, and the ghost's MSC4501 profile room and MSC4503 handle
-    profile fields. Only what differs is written."""
-    config = app.state.config
-    synapse = app.state.synapse
-    for remote in await app.state.repository.list_remote_accounts():
-        ghost, room_id = remote.ghost_user_id, remote.room_id
-        try:
-            if await synapse.get_room_state(room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, as_user_id=_bot(app)) != {
-                "user_id": ghost
-            }:
-                await synapse.send_state_event(
-                    room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": ghost}, as_user_id=_bot(app)
-                )
-        except SynapseError:
-            logger.info("Could not set %s in %s", SOCIAL_PROFILE_USER_ID_STATE_TYPE, room_id, exc_info=True)
-        wanted: dict[str, Any] = {}
-        if config.bridge.set_msc4501_profile_room:
-            wanted[SOCIAL_PROFILE_ROOM_FIELD] = {"room_id": room_id, "via": [config.synapse.server_name]}
-        if config.bridge.msc4503_external_handle in ("profile", "both"):
-            wanted[EXTERNAL_HANDLE_FIELD] = external_handle_value(config, handle=remote.handle)
-        if not wanted:
-            continue
-        try:
-            profile = await synapse.get_profile(ghost)
-        except SynapseError:
-            profile = {}
-        for key, value in wanted.items():
-            if profile.get(key) == value:
-                continue
-            try:
-                await synapse.set_profile_field(ghost, key, value)
-            except SynapseError:
-                logger.info("Could not set %s for %s", key, ghost, exc_info=True)
 
 
 async def ensure_ghost(app: FastAPI, identity: RemoteIdentity) -> tuple[str, str, str | None, str | None, dict]:
@@ -467,9 +467,9 @@ __all__ = [
     "catch_up",
     "create_remote_room",
     "did_for_ghost",
-    "apply_ghost_profiles",
-    "apply_room_access",
+    "apply_room_settings",
     "remote_room_history_visibility",
+    "sync_remote_settings",
     "ensure_ghost",
     "ensure_remote_account",
     "ghost_user_id",

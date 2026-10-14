@@ -243,6 +243,12 @@ class SynapseClient:
             as_user_id=user_id,
         )
 
+    async def delete_profile_field(self, user_id: str, key: str) -> None:
+        """Remove an MSC4133 profile field."""
+        await self._request(
+            "DELETE", f"/_matrix/client/v3/profile/{user_id}/{quote(key, safe='')}", as_user_id=user_id
+        )
+
     async def redact_event(self, room_id: str, event_id: str, *, as_user_id: str) -> None:
         await self._request(
             "PUT",
