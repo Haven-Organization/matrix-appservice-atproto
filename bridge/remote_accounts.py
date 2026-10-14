@@ -11,6 +11,7 @@ profile rooms, the same as matrix-appservice-activitypub's (see
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -147,20 +148,43 @@ async def _mark_profile_room(app: FastAPI, ghost: str, room_id: str) -> None:
             logger.info("Could not set %s for %s", SOCIAL_PROFILE_ROOM_FIELD, ghost, exc_info=True)
 
 
-async def apply_external_handles(app: FastAPI) -> None:
-    """Give the ghost of every account with a room here its MSC4503
-    profile field, so ghosts made before the setting was turned on carry
-    it too. (Any other ghost gets it the next time it does something.)"""
+async def apply_ghost_profiles(app: FastAPI) -> None:
+    """Bring every account with a room here into line with the current
+    settings, so ghosts and rooms made before a setting was turned on (or
+    before the bridge set something at all) carry it too: the room's
+    MSC4501 owner, and the ghost's MSC4501 profile room and MSC4503 handle
+    profile fields. Only what differs is written."""
     config = app.state.config
-    if config.bridge.msc4503_external_handle not in ("profile", "both"):
-        return
+    synapse = app.state.synapse
     for remote in await app.state.repository.list_remote_accounts():
+        ghost, room_id = remote.ghost_user_id, remote.room_id
         try:
-            await app.state.synapse.set_profile_field(
-                remote.ghost_user_id, EXTERNAL_HANDLE_FIELD, external_handle_value(config, handle=remote.handle)
-            )
+            if await synapse.get_room_state(room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, as_user_id=_bot(app)) != {
+                "user_id": ghost
+            }:
+                await synapse.send_state_event(
+                    room_id, SOCIAL_PROFILE_USER_ID_STATE_TYPE, {"user_id": ghost}, as_user_id=_bot(app)
+                )
         except SynapseError:
-            logger.info("Could not set %s for %s", EXTERNAL_HANDLE_FIELD, remote.ghost_user_id, exc_info=True)
+            logger.info("Could not set %s in %s", SOCIAL_PROFILE_USER_ID_STATE_TYPE, room_id, exc_info=True)
+        wanted: dict[str, Any] = {}
+        if config.bridge.set_msc4501_profile_room:
+            wanted[SOCIAL_PROFILE_ROOM_FIELD] = {"room_id": room_id, "via": [config.synapse.server_name]}
+        if config.bridge.msc4503_external_handle in ("profile", "both"):
+            wanted[EXTERNAL_HANDLE_FIELD] = external_handle_value(config, handle=remote.handle)
+        if not wanted:
+            continue
+        try:
+            profile = await synapse.get_profile(ghost)
+        except SynapseError:
+            profile = {}
+        for key, value in wanted.items():
+            if profile.get(key) == value:
+                continue
+            try:
+                await synapse.set_profile_field(ghost, key, value)
+            except SynapseError:
+                logger.info("Could not set %s for %s", key, ghost, exc_info=True)
 
 
 async def ensure_ghost(app: FastAPI, identity: RemoteIdentity) -> tuple[str, str, str | None, str | None, dict]:
@@ -399,7 +423,7 @@ __all__ = [
     "catch_up",
     "create_remote_room",
     "did_for_ghost",
-    "apply_external_handles",
+    "apply_ghost_profiles",
     "ensure_ghost",
     "ensure_remote_account",
     "ghost_user_id",
