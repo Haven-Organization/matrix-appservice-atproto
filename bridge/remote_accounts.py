@@ -148,6 +148,42 @@ async def _mark_profile_room(app: FastAPI, ghost: str, room_id: str) -> None:
             logger.info("Could not set %s for %s", SOCIAL_PROFILE_ROOM_FIELD, ghost, exc_info=True)
 
 
+def remote_room_history_visibility(app: FastAPI) -> str:
+    """Who can read a Remote User Room's history, per
+    ``bridge.world_readable_remote_rooms``: anyone (so it can be previewed
+    without joining), or only its members ("shared", Matrix's default)."""
+    return "world_readable" if app.state.config.bridge.world_readable_remote_rooms else "shared"
+
+
+async def _converge_state(app: FastAPI, room_id: str, event_type: str, key: str, value: str) -> None:
+    """Set one field of a room's state event if it differs. Best-effort."""
+    synapse = app.state.synapse
+    try:
+        current = await synapse.get_room_state(room_id, event_type, as_user_id=_bot(app)) or {}
+        if current.get(key) != value:
+            await synapse.send_state_event(room_id, event_type, {**current, key: value}, as_user_id=_bot(app))
+    except SynapseError:
+        logger.info("Could not set %s in %s", event_type, room_id, exc_info=True)
+
+
+async def apply_room_access(app: FastAPI) -> None:
+    """Bring existing rooms into line with the access settings: every
+    Remote User Room's join rule and history visibility, and every local
+    Profile Room's join rule. Only what differs is written."""
+    config = app.state.config
+    repository = app.state.repository
+    for remote in await repository.list_remote_accounts():
+        await _converge_state(app, remote.room_id, "m.room.join_rules", "join_rule", config.bridge.ghost_room_join_rule)
+        await _converge_state(
+            app, remote.room_id, "m.room.history_visibility", "history_visibility", remote_room_history_visibility(app)
+        )
+    for account in await repository.list_accounts():
+        if account.profile_room_id:
+            await _converge_state(
+                app, account.profile_room_id, "m.room.join_rules", "join_rule", config.bridge.local_profile_room_join_rule
+            )
+
+
 async def apply_ghost_profiles(app: FastAPI) -> None:
     """Bring every account with a room here into line with the current
     settings, so ghosts and rooms made before a setting was turned on (or
@@ -227,6 +263,8 @@ async def create_remote_room(
         power_level_users={ghost: 100},
         power_level_events={SOCIAL_PROFILE_USER_ID_STATE_TYPE: SOCIAL_PROFILE_USER_ID_POWER_LEVEL},
         predecessor=predecessor,
+        join_rule=app.state.config.bridge.ghost_room_join_rule,
+        history_visibility=remote_room_history_visibility(app),
     )
     await synapse.join_room(room_id, as_user_id=ghost)
     await _mark_profile_room(app, ghost, room_id)
@@ -430,6 +468,8 @@ __all__ = [
     "create_remote_room",
     "did_for_ghost",
     "apply_ghost_profiles",
+    "apply_room_access",
+    "remote_room_history_visibility",
     "ensure_ghost",
     "ensure_remote_account",
     "ghost_user_id",

@@ -17,6 +17,7 @@ The bridge reads `config.yaml` once, at startup, so restart it after a change. T
 - [In the sample config](#in-the-sample-config)
 - [`bridge`](#bridge)
   - [Access and networking](#access-and-networking)
+  - [Room access](#room-access)
   - [Chat rooms](#chat-rooms)
   - [MSC4501 and related proposals](#msc4501-and-related-proposals)
 - [`synapse`](#synapse)
@@ -88,6 +89,34 @@ Synapse server admins count as well if [`synapse.admin_token`](#synapseadmin_tok
 **Default:** unset (the endpoints don't exist)
 
 Enables the operator HTTP endpoints under `/_bridge/admin` (create an account, write test records, request a relay crawl) and is the bearer token they require. Never expose `/_bridge/` publicly; `deploy/nginx.conf.example` doesn't.
+
+### Room access
+
+Same settings, names and defaults as matrix-appservice-activitypub. Existing rooms are brought into line with them when the bridge starts.
+
+#### `bridge.ghost_room_join_rule`
+
+**Default:** `knock`. One of `knock`, `invite`, `public`.
+
+Join rule of a Remote User Room. With `knock`, anyone on this homeserver can ask to be let in, and the bridge lets them in at once (the room's ghost invites them); joining doesn't follow the account.
+
+#### `bridge.local_profile_room_join_rule`
+
+**Default:** `knock`. One of `knock`, `invite`, `public`.
+
+Join rule of a local user's Profile Room. With `knock`, only the owner's own knock is let in, so they can always get back in; anyone else has to be invited by someone inside.
+
+#### `bridge.world_readable_remote_rooms`
+
+**Default:** `false`
+
+Give Remote User Rooms `history_visibility: world_readable`, so their posts and profile can be previewed without joining or knocking. Independent of the join rule, which still decides how joining works.
+
+#### `bridge.accept_federated_knocks`
+
+**Default:** `false`
+
+Also let in knocks from users on other homeservers. Off, such a knock is left for someone already in the room to answer.
 
 ### Chat rooms
 

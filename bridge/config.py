@@ -106,6 +106,19 @@ class BridgeSection:
     # "events" (a snapshot on every event the ghost sends), "both", or
     # "off" (default).
     msc4503_external_handle: str = "off"
+    # Join rule of a Remote User Room: "knock" (default) lets anyone ask to
+    # be let in, and the bridge lets them in (see
+    # bridge.membership.maybe_handle_knock); "invite" or "public" otherwise.
+    ghost_room_join_rule: str = "knock"
+    # The same for a local user's own Profile Room, where only its owner's
+    # knock is let in.
+    local_profile_room_join_rule: str = "knock"
+    # Give Remote User Rooms history_visibility: world_readable, so their
+    # posts and profile can be previewed without joining. Off by default.
+    world_readable_remote_rooms: bool = False
+    # Let in knocks from users on other homeservers too. Off by default:
+    # who is admitted to this server's rooms is this server's call.
+    accept_federated_knocks: bool = False
 
     def resolved_internal_base_url(self) -> str:
         return self.internal_base_url or f"http://{self.listen_host}:{self.listen_port}"
@@ -326,6 +339,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
         raise ConfigError(
             f"bridge.quote_import_policy must be 'always', 'known', or 'never', got {quote_import_policy!r}"
         )
+    join_rules = ("public", "invite", "knock")
+    ghost_room_join_rule = bridge_raw.get("ghost_room_join_rule", "knock")
+    if ghost_room_join_rule not in join_rules:
+        raise ConfigError(f"bridge.ghost_room_join_rule must be one of {join_rules}, got {ghost_room_join_rule!r}")
+    local_profile_room_join_rule = bridge_raw.get("local_profile_room_join_rule", "knock")
+    if local_profile_room_join_rule not in join_rules:
+        raise ConfigError(
+            f"bridge.local_profile_room_join_rule must be one of {join_rules}, got {local_profile_room_join_rule!r}"
+        )
     bridge_section = BridgeSection(
         domain=_require(bridge_raw, "domain", "bridge").lower().rstrip("."),
         public_base_url=_require(bridge_raw, "public_base_url", "bridge").rstrip("/"),
@@ -346,6 +368,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
         chat_rooms_as_dms=bool(bridge_raw.get("chat_rooms_as_dms", False)),
         set_msc4501_profile_room=bool(bridge_raw.get("set_msc4501_profile_room", False)),
         msc4503_external_handle=msc4503_external_handle,
+        ghost_room_join_rule=ghost_room_join_rule,
+        local_profile_room_join_rule=local_profile_room_join_rule,
+        world_readable_remote_rooms=bool(bridge_raw.get("world_readable_remote_rooms", False)),
+        accept_federated_knocks=bool(bridge_raw.get("accept_federated_knocks", False)),
     )
 
     synapse_section = SynapseSection(

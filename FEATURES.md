@@ -46,6 +46,8 @@ Besides your Profile Room, the bridge keeps two rooms for every user. Their name
 
 **Your space** holds every room the bridge manages for you: your Profile Room first, your notifications room second, then the room of each account you follow or imported a post from. Rooms are added when you join them and removed when you leave a followed account's room. The bot creates the space and you sit one power level below it (99), as in your Profile Room.
 
+**Getting into a room.** Remote User Rooms and Profile Rooms are knockable by default (`bridge.ghost_room_join_rule`, `bridge.local_profile_room_join_rule`), as in matrix-appservice-activitypub. Knock on any Remote User Room and the bridge lets you in straight away: its ghost invites you. Joining doesn't follow the account; only `]follow` does that. On a Profile Room only its owner's knock is let in, so you can always get back into your own. Knocks from other homeservers are left for someone inside to answer unless `bridge.accept_federated_knocks` is on. With `bridge.world_readable_remote_rooms` on, a Remote User Room's posts and profile can be previewed without joining at all.
+
 **Your notifications room** is a private room with the bot where it tells you about:
 
 | Event | Message |

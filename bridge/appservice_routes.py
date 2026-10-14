@@ -38,7 +38,7 @@ from bridge.chat import (
 from bridge.commands import bot_mxid, is_bridge_user, maybe_handle_command, notice
 from bridge.danger import maybe_handle_confirmation
 from bridge.interactions import maybe_handle_reaction, maybe_publish_reply
-from bridge.membership import maybe_handle_join, maybe_handle_leave
+from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave
 from bridge.profile_posts import maybe_handle_profile_room_state, maybe_handle_redaction, maybe_publish_profile_post
 from bridge.synapse_client import SynapseError
 
@@ -130,6 +130,8 @@ async def _handle_transaction(
             if await maybe_accept_invite(request, event):
                 continue
             if await maybe_start_chat_from_invite(request, event):
+                continue
+            if await maybe_handle_knock(request, event):
                 continue
             if await maybe_handle_join(request, event):
                 continue

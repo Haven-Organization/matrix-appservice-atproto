@@ -133,11 +133,16 @@ class SynapseClient:
         is_direct: bool = False,
         preset: str = "private_chat",
         predecessor: dict[str, str] | None = None,
+        join_rule: str | None = None,
+        history_visibility: str | None = None,
     ) -> str:
         """Create an invite-only room as ``as_user_id``. Returns the room ID.
 
         ``preset`` is ``private_chat`` or ``trusted_private_chat`` (the
         latter gives everyone invited at creation the creator's own level).
+
+        ``join_rule`` (e.g. ``"knock"``) and ``history_visibility`` (e.g.
+        ``"world_readable"``), if given, override the preset's.
 
         ``power_level_users``/``power_level_events`` are applied on top of
         the defaults. The creator must not be given a level in a v12+ room
@@ -152,8 +157,17 @@ class SynapseClient:
             body["topic"] = topic
         if invite:
             body["invite"] = invite
+        initial_state: list[dict[str, Any]] = []
         if avatar_mxc:
-            body["initial_state"] = [{"type": "m.room.avatar", "state_key": "", "content": {"url": avatar_mxc}}]
+            initial_state.append({"type": "m.room.avatar", "state_key": "", "content": {"url": avatar_mxc}})
+        if join_rule:
+            initial_state.append({"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": join_rule}})
+        if history_visibility:
+            initial_state.append(
+                {"type": "m.room.history_visibility", "state_key": "", "content": {"history_visibility": history_visibility}}
+            )
+        if initial_state:
+            body["initial_state"] = initial_state
         # `predecessor` ({"room_id", "event_id"}) marks the new room as the
         # continuation of an old one, as a room upgrade does.
         creation_content: dict[str, Any] = {}

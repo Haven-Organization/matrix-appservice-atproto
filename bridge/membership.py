@@ -91,6 +91,39 @@ async def _welcome_to_profile_room(request: Request, *, room_id: str, joined_use
         logger.info("Could not send welcome message to %s", room_id, exc_info=True)
 
 
+async def maybe_handle_knock(request: Request, event: dict) -> bool:
+    """Returns True if this was someone knocking on a room the bridge
+    manages, as in matrix-appservice-activitypub: a knock on any Remote
+    User Room is let in (invited by the room's ghost), and a knock on a
+    local user's Profile Room only if it is that user's own. Letting
+    someone in never follows the account for them -- only ``follow`` does
+    that. Knocks from other homeservers are left for someone inside to
+    answer, unless ``bridge.accept_federated_knocks`` is on."""
+    if event.get("type") != "m.room.member" or (event.get("content") or {}).get("membership") != "knock":
+        return False
+    room_id = event.get("room_id", "")
+    knocker = event.get("state_key", "")
+    config = request.app.state.config
+    if not room_id or not knocker or is_bridge_user(config, knocker):
+        return False
+    if knocker.split(":", 1)[-1] != config.synapse.server_name and not config.bridge.accept_federated_knocks:
+        return False
+    repository = request.app.state.repository
+    remote = await repository.get_remote_account_for_room(room_id)
+    if remote is not None:
+        inviter = remote.ghost_user_id
+    else:
+        owner = await repository.get_account_for_profile_room(room_id)
+        if owner is None or owner.matrix_user_id != knocker:
+            return False
+        inviter = bot_mxid(config)
+    try:
+        await request.app.state.synapse.invite_user(room_id, knocker, as_user_id=inviter)
+    except SynapseError:
+        logger.warning("Could not let %s into %s", knocker, room_id, exc_info=True)
+    return True
+
+
 async def maybe_handle_join(request: Request, event: dict) -> bool:
     """Returns True if this was a local user joining a room the bridge
     manages for them -- their Profile Room, their notifications room, or a

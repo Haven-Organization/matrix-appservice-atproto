@@ -82,6 +82,7 @@ async def create_profile_room(
         # bot, could reassign whose profile this room is.
         power_level_events={SOCIAL_PROFILE_USER_ID_STATE_TYPE: SOCIAL_PROFILE_USER_ID_POWER_LEVEL},
         predecessor=predecessor,
+        join_rule=app.state.config.bridge.local_profile_room_join_rule,
     )
     logger.info("Created Profile Room %s for %s", room_id, owner)
     return await bind_profile_room(app, account, room_id)

@@ -39,7 +39,7 @@ from bridge.matrix_records import register_matrix_sources
 from bridge.notification_poller import notification_loop
 from bridge.pds import Pds, PdsError
 from bridge.record_sources import RecordSources
-from bridge.remote_accounts import apply_ghost_profiles
+from bridge.remote_accounts import apply_ghost_profiles, apply_room_access
 from bridge.repository import BridgeRepository
 from bridge.storage import open_repository
 from bridge.synapse_client import SynapseClient, SynapseError
@@ -258,9 +258,10 @@ def create_app(
         chat_task = asyncio.create_task(chat_loop(app))
         declarations_task = asyncio.create_task(_ensure_chat_declarations(app))
         ghost_profiles_task = asyncio.create_task(apply_ghost_profiles(app))
+        room_access_task = asyncio.create_task(apply_room_access(app))
         tasks = (
             self_check_task, relay_task, jetstream_task, notifications_task, catch_up_task, bridge_info_task,
-            chat_task, declarations_task, ghost_profiles_task,
+            chat_task, declarations_task, ghost_profiles_task, room_access_task,
         )
         try:
             yield
