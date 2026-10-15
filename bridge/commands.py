@@ -278,6 +278,12 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 ),
                 (f"{p}status", "Show your handle, DID and Profile Room."),
                 (
+                    f"{p}import follows [handle.example.com]",
+                    "Follow every account another Bluesky account follows -- your old account, say. Or reply with "
+                    "it to an uploaded file listing handles or DIDs, one per line. Runs in the background and "
+                    "posts a summary when done.",
+                ),
+                (
                     f"{p}banner mxc://server/mediaid",
                     'Set your profile\'s banner image from already-uploaded Matrix media, or reply to an image '
                     f'with just "{p}banner". "{p}banner remove" clears it.',
@@ -286,7 +292,7 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
         ),
         "general": (
             "General",
-            "Following and everyday commands.",
+            "Following, chat and everyday commands.",
             [
                 (f"{p}help", f'Show the sections. "{p}help <section>" shows one section; "{p}help all" shows everything.'),
                 (
@@ -301,35 +307,24 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 ),
                 (f"{p}following", "List the accounts you follow."),
                 (
-                    f"{p}import https://bsky.app/profile/.../post/...",
-                    "Bring one specific post into Matrix without following its author.",
+                    f"{p}chat handle.example.com",
+                    f"Start (or reopen) a Bluesky chat with an account, as a direct-message room. {p}dm is the same "
+                    "command. With no argument inside an account's room, chats with that account.",
                 ),
                 (
-                    f"{p}import follows [handle.example.com]",
-                    "Follow every account another Bluesky account follows -- your old account, say. Or reply with "
-                    "it to an uploaded file listing handles or DIDs, one per line. Runs in the background and "
-                    "posts a summary when done.",
+                    f"{p}import https://bsky.app/profile/.../post/...",
+                    "Bring one specific post into Matrix without following its author.",
                 ),
                 (
                     f"{p}repost [your text]",
                     "Reply to a post with this to repost it from your account; add text to quote-post it instead. "
                     "Reacting to a post with 🔁 also reposts it, and with 👍 likes it.",
                 ),
-                (
-                    f"{p}chat handle.example.com",
-                    f"Start (or reopen) a Bluesky chat with an account, as a direct-message room. {p}dm is the same "
-                    "command. With no argument inside an account's room, chats with that account.",
-                ),
-                (
-                    f"{p}widget",
-                    "Add the bridge's widget to this room: buttons for most of these commands, for clients that "
-                    "support Matrix widgets.",
-                ),
             ],
         ),
         "advanced": (
             "Advanced/Maintenance",
-            "Blocking, and repairing or refilling rooms.",
+            "Blocking, refilling rooms, and other things almost nobody needs day to day.",
             [
                 (f"{p}block handle.example.com", "Block an account (and unfollow it)."),
                 (f"{p}unblock handle.example.com", "Remove a block."),
@@ -340,8 +335,19 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                     "Only a server admin can give a custom N.",
                 ),
                 (
+                    f"{p}widget",
+                    "Add the bridge's widget to this room: buttons for most of these commands, for clients that "
+                    "support Matrix widgets.",
+                ),
+            ],
+        ),
+        "admin": (
+            "Admin",
+            "Bridge-wide maintenance, gated to a server admin.",
+            [
+                (
                     f"{p}refresh [handle.example.com]",
-                    "Server admins: re-read an account's handle, name, avatar and bio, and bring its room and ghost "
+                    "Re-read an account's handle, name, avatar and bio, and bring its room and ghost "
                     "into line with the current settings. With no argument, the account whose room this is.",
                 ),
             ],

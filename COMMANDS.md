@@ -20,21 +20,22 @@ Everything that happens without a command (posting, liking, replying, what shows
 - [Profile](#profile)
   - [`]create profile`](#create-profile)
   - [`]status`](#status)
+  - [`]import follows`](#import-follows-handleexamplecom)
   - [`]banner`](#banner-mxcservermediaid)
 - [General](#general)
   - [`]help` / `]help <section>`](#help--help-section)
   - [`]follow`](#follow-handleexamplecom)
   - [`]unfollow`](#unfollow-handleexamplecom)
   - [`]following`](#following)
-  - [`]import <url>`](#import-url)
-  - [`]import follows`](#import-follows-handleexamplecom)
-  - [`]repost`](#repost-reply-to-a-post)
   - [`]chat` / `]dm`](#chat-handleexamplecom--dm-handleexamplecom)
-  - [`]widget`](#widget)
+  - [`]import <url>`](#import-url)
+  - [`]repost`](#repost-reply-to-a-post)
 - [Advanced/Maintenance](#advancedmaintenance)
   - [`]block`](#block-handleexamplecom)
   - [`]unblock`](#unblock-handleexamplecom)
   - [`]backfill`](#backfill-n)
+  - [`]widget`](#widget)
+- [Admin](#admin)
   - [`]refresh`](#refresh-handleexamplecom)
 - [Danger Zone](#danger-zone)
   - [`]link profile`](#link-profile)
@@ -72,6 +73,18 @@ Setting up and maintaining your own Bluesky identity.
 
 ---
 
+### `]import follows [handle.example.com]`
+
+**Syntax:** `]import follows handle.example.com` (or `]import following`), naming any Bluesky account: a leading `@`, a DID or a `bsky.app/profile/...` link also work. Or upload a file and send `]import follows` with no argument as a reply to it (a plain or thread reply both work).
+
+**What it does:** Follows every account on the list, one after another, exactly as `]follow` would: with a handle, everyone that account follows (read from its own repository, so it works for any account, such as the one you're moving here from); with a file, every account it lists. The file is plain text with one handle, DID or `bsky.app` profile link per line. A CSV works too: only its first column is read, and a header row is skipped. Accounts you already follow, and your own, are skipped. When it's done the bot posts one summary: how many were followed and skipped, and each failure with its reason.
+
+**Who can run it:** Requires an identity.
+
+**Notes:** Runs in the background and can take minutes, since each newly followed account gets its own room and its recent posts. Bluesky has no follows export of its own, which is why a handle is the main way in. matrix-appservice-activitypub's version takes a fediverse export file instead. The widget accepts the file directly, without needing it to be an upload you reply to. Following accounts hosted on this bridge isn't supported yet, so they are listed as failures.
+
+---
+
 ### `]banner mxc://server/mediaid`
 
 **Syntax:** `]banner mxc://server/mediaid`; or reply to an image message with just `]banner`; or `]banner remove`.
@@ -86,11 +99,11 @@ Setting up and maintaining your own Bluesky identity.
 
 ## General
 
-Following and everyday commands.
+Following, chat and everyday commands.
 
 ### `]help` / `]help <section>`
 
-**Syntax:** `]help`, or tag the bot with nothing else, shows a table of every section (Profile, General, Advanced/Maintenance) with a one-line blurb each. `]help <section>` (e.g. `]help profile`, `]help advanced`) shows that section's commands. `]help all` shows every section's commands in one table.
+**Syntax:** `]help`, or tag the bot with nothing else, shows a table of every section (Profile, General, Advanced/Maintenance, Admin, Danger Zone) with a one-line blurb each. `]help <section>` (e.g. `]help profile`, `]help advanced`) shows that section's commands. `]help all` shows every section's commands in one table.
 
 **What it does:** Sends a table as a rich `m.text` message (not a notice, so "hide notices" client settings don't suppress it).
 
@@ -132,40 +145,6 @@ Following and everyday commands.
 
 ---
 
-### `]import <url>`
-
-**Syntax:** `]import https://bsky.app/profile/<handle>/post/<id>` (an `at://` post address also works).
-
-**What it does:** Mirrors that one post into its author's Remote User Room, creating the room if needed, and invites you to it, without following the author.
-
-**Who can run it:** Any local user.
-
----
-
-### `]import follows [handle.example.com]`
-
-**Syntax:** `]import follows handle.example.com` (or `]import following`), naming any Bluesky account: a leading `@`, a DID or a `bsky.app/profile/...` link also work. Or upload a file and send `]import follows` with no argument as a reply to it (a plain or thread reply both work).
-
-**What it does:** Follows every account on the list, one after another, exactly as `]follow` would: with a handle, everyone that account follows (read from its own repository, so it works for any account, such as the one you're moving here from); with a file, every account it lists. The file is plain text with one handle, DID or `bsky.app` profile link per line. A CSV works too: only its first column is read, and a header row is skipped. Accounts you already follow, and your own, are skipped. When it's done the bot posts one summary: how many were followed and skipped, and each failure with its reason.
-
-**Who can run it:** Requires an identity.
-
-**Notes:** Runs in the background and can take minutes, since each newly followed account gets its own room and its recent posts. Bluesky has no follows export of its own, which is why a handle is the main way in. matrix-appservice-activitypub's version takes a fediverse export file instead. The widget accepts the file directly, without needing it to be an upload you reply to. Following accounts hosted on this bridge isn't supported yet, so they are listed as failures.
-
----
-
-### `]repost` (reply to a post)
-
-**Syntax:** Send `]repost` as a reply to a post to repost it. Add text after it (`]repost Worth reading`) to quote-post it with that text instead. Reacting to a post with 🔁 is the same as a bare `]repost`.
-
-**What it does:** Reposts (or quotes) that post from your account, and leaves a card in your own Profile Room: "🔁 *you* reposted *author*'s post" with a preview and a link to the post. The repost may have happened in someone else's room, and your Profile Room is your timeline. The bot sends the card, with an MSC4144 per-message profile so that clients which support it show it as yours.
-
-**Who can run it:** Requires an identity. "A post" is any message that stands for one: a mirrored Bluesky post in any room (including a mirrored repost, which acts on the original), or a local user's own post.
-
-**Notes:** Undo it by removing the 🔁 reaction, redacting the command message, or redacting the card; any of the three works, and the other is cleaned up. Reposting something twice does nothing the second time.
-
----
-
 ### `]chat handle.example.com` / `]dm handle.example.com`
 
 **Syntax:** `]chat handle.example.com` or `]dm handle.example.com` (the same command: Bluesky has one kind of direct message, which it calls Chat). With no argument inside an account's Remote User Room, chats with that account.
@@ -186,21 +165,31 @@ Following and everyday commands.
 
 ---
 
-### `]widget`
+### `]import <url>`
 
-**Syntax:** `]widget`, run in whatever room should get it.
+**Syntax:** `]import https://bsky.app/profile/<handle>/post/<id>` (an `at://` post address also works).
 
-**What it does:** Adds the bridge's room widget: buttons for most of the commands here, suited to the kind of room it's in. See [Widget vs. commands](#widget-vs-commands).
+**What it does:** Mirrors that one post into its author's Remote User Room, creating the room if needed, and invites you to it, without following the author.
 
-**Who can run it:** Any local user, in any room the bot is in and may change the settings of.
+**Who can run it:** Any local user.
 
-**Notes:** Every room the bridge creates gets the widget by itself, and rooms made before the widget existed get it once, the next time the bridge starts. A room's members can remove it, and it isn't put back. Running `]widget` adds a fresh one each time, so running it again adds a second rather than doing nothing; remove a stale one in your client's widgets panel.
+---
+
+### `]repost` (reply to a post)
+
+**Syntax:** Send `]repost` as a reply to a post to repost it. Add text after it (`]repost Worth reading`) to quote-post it with that text instead. Reacting to a post with 🔁 is the same as a bare `]repost`.
+
+**What it does:** Reposts (or quotes) that post from your account, and leaves a card in your own Profile Room: "🔁 *you* reposted *author*'s post" with a preview and a link to the post. The repost may have happened in someone else's room, and your Profile Room is your timeline. The bot sends the card, with an MSC4144 per-message profile so that clients which support it show it as yours.
+
+**Who can run it:** Requires an identity. "A post" is any message that stands for one: a mirrored Bluesky post in any room (including a mirrored repost, which acts on the original), or a local user's own post.
+
+**Notes:** Undo it by removing the 🔁 reaction, redacting the command message, or redacting the card; any of the three works, and the other is cleaned up. Reposting something twice does nothing the second time.
 
 ---
 
 ## Advanced/Maintenance
 
-Blocking, and repairing or refilling rooms.
+Blocking, refilling rooms, and other things almost nobody needs day to day.
 
 ### `]block handle.example.com`
 
@@ -231,6 +220,22 @@ Blocking, and repairing or refilling rooms.
 **Notes:** A brand-new follow already triggers one automatic backfill. This is for topping that up or pulling in a specific conversation. A reply written by a user of this bridge isn't pulled into the thread; it already lives in their own Profile Room.
 
 ---
+
+### `]widget`
+
+**Syntax:** `]widget`, run in whatever room should get it.
+
+**What it does:** Adds the bridge's room widget: buttons for most of the commands here, suited to the kind of room it's in. See [Widget vs. commands](#widget-vs-commands).
+
+**Who can run it:** Any local user, in any room the bot is in and may change the settings of.
+
+**Notes:** Every room the bridge creates gets the widget by itself, and rooms made before the widget existed get it once, the next time the bridge starts. A room's members can remove it, and it isn't put back. Running `]widget` adds a fresh one each time, so running it again adds a second rather than doing nothing; remove a stale one in your client's widgets panel.
+
+---
+
+## Admin
+
+Bridge-wide maintenance, gated to a server admin.
 
 ### `]refresh [handle.example.com]`
 
