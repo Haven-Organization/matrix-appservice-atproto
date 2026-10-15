@@ -39,6 +39,7 @@ from bridge.pds import PdsError
 from bridge.profile_rooms import bind_profile_room, create_profile_room
 from bridge.remote_accounts import create_remote_room, ensure_ghost
 from bridge.repository import RemoteAccount
+from bridge.room_widget import add_bridge_widget
 from bridge.spaces import NOTIFICATIONS_ROOM_SPACE_ORDER, add_room_to_space, remove_room_from_space
 from bridge.synapse_client import SynapseError
 
@@ -494,6 +495,7 @@ async def _execute_replace_room(request: Request, *, sender: str, room_id: str, 
                 predecessor=predecessor,
             )
             await repository.set_notifications_room(owner, new_room_id)
+            await add_bridge_widget(app, new_room_id)
             await remove_room_from_space(app, owner, old_room_id)
             await add_room_to_space(app, owner, new_room_id, order=NOTIFICATIONS_ROOM_SPACE_ORDER)
     except SynapseError:

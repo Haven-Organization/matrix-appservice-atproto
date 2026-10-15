@@ -19,7 +19,7 @@ from bridge.atproto.identity import RemoteIdentity
 from bridge.pds import PdsError, Write
 from bridge.remote_accounts import backfill, ensure_remote_account
 from bridge.repository import Account, RemoteAccount
-from bridge.spaces import add_room_to_space
+from bridge.spaces import add_room_to_space, remove_room_from_space
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -54,10 +54,17 @@ async def invite_to_room(app: FastAPI, room_id: str, user_id: str) -> None:
         logger.info("Invite of %s to %s: %s", user_id, room_id, exc)
 
 
-async def follow(app: FastAPI, account: Account, identity: RemoteIdentity) -> tuple[RemoteAccount, bool]:
+async def follow(
+    app: FastAPI, account: Account, identity: RemoteIdentity, *, backfill_in_background: bool = True
+) -> tuple[RemoteAccount, bool]:
     """Follow ``identity`` as ``account``. Returns the remote account and
     whether this was a new follow (False: already following). Raises
-    ``SynapseError``/``PdsError`` if the room or record can't be made."""
+    ``SynapseError``/``PdsError`` if the room or record can't be made.
+
+    A newly made room is filled with the account's recent posts, in the
+    background unless ``backfill_in_background`` is False (a follows import,
+    which follows one account after another, waits for each instead of
+    starting hundreds at once)."""
     repository = app.state.repository
     remote, created = await ensure_remote_account(app, identity)
     already = await repository.get_follow_rkey(account.did, remote.did) is not None
@@ -71,7 +78,14 @@ async def follow(app: FastAPI, account: Account, identity: RemoteIdentity) -> tu
     await invite_to_room(app, remote.room_id, account.matrix_user_id)
     await add_room_to_space(app, account.matrix_user_id, remote.room_id)
     if created:
-        run_in_background(app, backfill(app, remote, app.state.config.atproto.follow_backfill_count))
+        filling = backfill(app, remote, app.state.config.atproto.follow_backfill_count)
+        if backfill_in_background:
+            run_in_background(app, filling)
+        else:
+            try:
+                await filling
+            except Exception:
+                logger.warning("Backfill of %s failed", remote.did, exc_info=True)
     return remote, not already
 
 
@@ -88,3 +102,27 @@ async def unfollow(app: FastAPI, account: Account, remote_did: str) -> bool:
     await repository.remove_follow(account.did, remote_did)
     app.state.jetstream.refresh()
     return True
+
+
+async def unfollow_departed(app: FastAPI) -> None:
+    """At startup: unfollow, for each local user, every account whose room
+    they are no longer in. Leaving the room unfollows as it happens (see
+    ``bridge.membership.maybe_handle_leave``); this catches a leave the
+    bridge never saw, so nobody can stay following -- and have posts
+    collected -- without being in the room they arrive in. A pending
+    invite still counts as in."""
+    repository = app.state.repository
+    synapse = app.state.synapse
+    for account in await repository.list_accounts():
+        for remote in await repository.list_follows(account.did):
+            try:
+                member = await synapse.get_room_state(
+                    remote.room_id, "m.room.member", account.matrix_user_id, as_user_id=_bot(app)
+                )
+            except SynapseError:
+                continue  # can't tell: leave it be
+            if (member or {}).get("membership") not in ("leave", "ban"):
+                continue
+            await remove_room_from_space(app, account.matrix_user_id, remote.room_id)
+            if await unfollow(app, account, remote.did):
+                logger.info("%s is no longer in %s: unfollowed %s", account.matrix_user_id, remote.room_id, remote.handle)

@@ -26,6 +26,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from bridge.room_widget import add_bridge_widget
 from bridge.spaces import NOTIFICATIONS_ROOM_SPACE_ORDER, add_room_to_space
 from bridge.synapse_client import SynapseError
 
@@ -61,6 +62,7 @@ async def ensure_notifications_room(app: FastAPI, matrix_user_id: str) -> str | 
         logger.warning("Could not create notifications room for %s", matrix_user_id, exc_info=True)
         return None
     await repository.set_notifications_room(matrix_user_id, room_id)
+    await add_bridge_widget(app, room_id)
     await add_room_to_space(app, matrix_user_id, room_id, order=NOTIFICATIONS_ROOM_SPACE_ORDER)
     name = config.bridge.notifications_room_name
     explanation = (

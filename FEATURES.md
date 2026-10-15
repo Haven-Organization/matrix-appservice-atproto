@@ -48,6 +48,10 @@ Besides your Profile Room, the bridge keeps two rooms for every user. Their name
 
 **Getting into a room.** Remote User Rooms and Profile Rooms are knockable by default (`bridge.ghost_room_join_rule`, `bridge.local_profile_room_join_rule`), as in matrix-appservice-activitypub. Knock on any Remote User Room and the bridge lets you in straight away: its ghost invites you. Joining doesn't follow the account; only `]follow` does that. On a Profile Room only its owner's knock is let in, so you can always get back into your own. Knocks from other homeservers are left for someone inside to answer unless `bridge.accept_federated_knocks` is on. With `bridge.world_readable_remote_rooms` on, a Remote User Room's posts and profile can be previewed without joining at all.
 
+**The room widget.** Every room the bridge creates (and, once, every room it made before the widget existed) carries the bridge's widget: in clients that show Matrix widgets, such as Element, a panel with buttons for following, blocking, chatting, importing posts and follows, backfilling, banners and the Danger Zone, suited to the room it's in. It is matrix-appservice-activitypub's widget, adapted; see [Widget vs. commands](COMMANDS.md#widget-vs-commands).
+
+**Leaving a room you follow from unfollows.** A followed account's room is where its posts arrive, so leaving it (or being removed) unfollows the account, as in matrix-appservice-activitypub. Nobody can follow and then leave, keeping the bridge collecting posts no one reads. A leave the bridge missed, say while it was down, is caught when it next starts.
+
 **Your notifications room** is a private room with the bot where it tells you about:
 
 | Event | Message |

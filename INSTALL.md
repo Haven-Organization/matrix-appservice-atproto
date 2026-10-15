@@ -51,7 +51,7 @@ If your provider has no plugin or API, [acme-dns](https://github.com/joohoi/acme
 `deploy/nginx.conf.example` has two server blocks to add to your existing nginx config:
 
 - A **wildcard block** (`server_name *.example.org`) that passes only `/.well-known/atproto-did` and the bridge's own routing check to the bridge. This is what makes handles resolve.
-- A **PDS block** (`server_name pds.example.org`) that passes `/xrpc/` (including the long-lived firehose WebSocket relays connect to), `/media/` and `/.well-known/did.json`.
+- A **PDS block** (`server_name pds.example.org`) that passes `/xrpc/` (including the long-lived firehose WebSocket relays connect to), `/media/`, `/.well-known/did.json` and the room widget (`/widget`).
 
 Copy them in, replace `example.org` and the certificate paths, then `nginx -t && systemctl reload nginx`. Four things in that file matter and are easy to lose when adapting it:
 
@@ -169,6 +169,16 @@ curl -si -H 'Origin: https://example.com' https://pds.example.org/.well-known/di
 ```
 
 Then, from any Matrix client, invite the bot (`@bluesky:example.org` by default) to a room and send `]create profile`.
+
+The room widget is the bridge's own page, and checks who is using it by asking your homeserver at `synapse.base_url`. These confirm both ends:
+
+```sh
+# The page is reachable: expect 200
+curl -s -o /dev/null -w '%{http_code}\n' https://pds.example.org/widget
+# From the bridge's machine, the homeserver checks widget sign-ins:
+# expect M_UNKNOWN_TOKEN (a 404 means that listener doesn't serve the "openid" resource)
+curl -s 'http://localhost:8008/_matrix/federation/v1/openid/userinfo?access_token=x'
+```
 
 Once an account exists, these confirm the rest of the network can find it (ATProto has no `nodeinfo`; this is what other servers look at instead). Replace `alice` with the account's handle:
 

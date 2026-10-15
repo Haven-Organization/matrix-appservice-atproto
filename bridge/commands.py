@@ -34,11 +34,12 @@ from bridge.atproto.identity import (
     IdentityError,
     RemoteIdentity,
     get_record,
+    list_all_records,
     parse_account_reference,
     resolve_account,
     resolve_did,
 )
-from bridge.follows import follow, invite_to_room, now_timestamp, run_in_background, unfollow
+from bridge.follows import FOLLOW_COLLECTION, follow, invite_to_room, now_timestamp, run_in_background, unfollow
 from bridge.handle_provisioning import HandleRejected
 from bridge.matrix_records import POST_COLLECTION
 from bridge.onboarding import ensure_user_rooms
@@ -58,6 +59,7 @@ from bridge.remote_accounts import (
 )
 from bridge.spaces import add_room_to_space
 from bridge.repository import Account, RemoteAccount
+from bridge.room_widget import add_bridge_widget
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,7 @@ BLOCK_COLLECTION = "app.bsky.graph.block"
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
     "unfollow|following|follow|unblock|block|backfill|banner|create|import|refresh|repost|status|help|"
-    "unlink|link|replace|delete|chat|dm"
+    "unlink|link|replace|delete|widget|chat|dm"
 )
 
 _COMMAND_RE = re.compile(rf"\b({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
@@ -217,6 +219,9 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_unfollow(request, argument=argument, **context)
     elif keyword == "following" and not lowered:
         await _handle_following(request, **context)
+    elif keyword == "import" and lowered.split()[:1] in (["follows"], ["following"]):
+        source = argument.split(None, 1)[1] if len(lowered.split()) > 1 else ""
+        await _handle_import_follows(request, argument=source, content=content, **context)
     elif keyword == "import" and argument:
         await _handle_import(request, argument=argument, **context)
     elif keyword == "repost":
@@ -246,6 +251,8 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
             await notice(request, room_id, f'Not sure what you mean -- try "{prefix}help" to see what I can do.')
     elif keyword == "refresh":
         await _handle_refresh(request, argument=argument, **context)
+    elif keyword == "widget" and not lowered:
+        await _handle_widget(request, **context)
     else:
         await notice(request, room_id, f'Not sure what you mean -- try "{prefix}help" to see what I can do.')
     return True
@@ -298,6 +305,12 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                     "Bring one specific post into Matrix without following its author.",
                 ),
                 (
+                    f"{p}import follows [handle.example.com]",
+                    "Follow every account another Bluesky account follows -- your old account, say. Or reply with "
+                    "it to an uploaded file listing handles or DIDs, one per line. Runs in the background and "
+                    "posts a summary when done.",
+                ),
+                (
                     f"{p}repost [your text]",
                     "Reply to a post with this to repost it from your account; add text to quote-post it instead. "
                     "Reacting to a post with 🔁 also reposts it, and with 👍 likes it.",
@@ -306,6 +319,11 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                     f"{p}chat handle.example.com",
                     f"Start (or reopen) a Bluesky chat with an account, as a direct-message room. {p}dm is the same "
                     "command. With no argument inside an account's room, chats with that account.",
+                ),
+                (
+                    f"{p}widget",
+                    "Add the bridge's widget to this room: buttons for most of these commands, for clients that "
+                    "support Matrix widgets.",
                 ),
             ],
         ),
@@ -699,6 +717,157 @@ async def _handle_import(request: Request, *, sender: str, room_id: str, argumen
         f"Imported into {remote.room_id}.",
         html_message=f"Imported into {_room_link_html(remote.room_id)}.",
     )
+
+
+# Most follows one import reads from another account.
+_FOLLOWS_IMPORT_MAX = 5000
+
+
+def parse_follows_list(text: str) -> list[str]:
+    """The accounts in an uploaded follows list: one handle, DID or
+    bsky.app profile link per line, or a CSV whose first column is one
+    (a header row is skipped, as it isn't any of those). Duplicates and
+    lines that aren't an account are dropped."""
+    references: list[str] = []
+    for line in text.splitlines():
+        first_column = line.split(",")[0].strip().strip('"').strip()
+        reference = parse_account_reference(first_column) if first_column else None
+        if reference is not None and reference not in references:
+            references.append(reference)
+    return references
+
+
+async def follows_of(request: Request, identity: RemoteIdentity) -> list[str]:
+    """The DIDs ``identity`` follows, read from its own repository."""
+    records = await list_all_records(
+        request.app.state.http_client, identity.pds, identity.did, FOLLOW_COLLECTION, max_records=_FOLLOWS_IMPORT_MAX
+    )
+    subjects = [str((record.get("value") or {}).get("subject") or "") for record in records]
+    return list(dict.fromkeys(subject for subject in subjects if parse_account_reference(subject)))
+
+
+def _import_follows_usage(config: Any) -> str:
+    p = config.appservice.command_prefix
+    return (
+        f'To import follows: "{p}import follows handle.example.com" follows everyone that account follows (your old '
+        f'account, say). Or upload a file listing handles or DIDs, one per line, and reply to it with "{p}import follows".'
+    )
+
+
+async def _handle_import_follows(request: Request, *, sender: str, room_id: str, argument: str, content: dict) -> None:
+    """Follow, one after another, every account another account follows or
+    an uploaded file lists. Checked here so the sender hears straight away
+    if something is wrong; the following itself runs in the background
+    (``run_follows_import``), as each new account gets a room and its
+    recent posts -- minutes of work for a long list, far past how long a
+    homeserver waits on one transaction."""
+    app = request.app
+    config = app.state.config
+    account = await _require_account(request, sender=sender, room_id=room_id)
+    if account is None:
+        return
+    if argument.strip():
+        try:
+            source = await resolve_account(
+                app.state.http_client, argument.split()[0], plc_directory=config.atproto.plc_directory
+            )
+        except IdentityError as exc:
+            await notice(request, room_id, str(exc))
+            return
+        references = await follows_of(request, source)
+        if not references:
+            await notice(request, room_id, f"@{source.handle} doesn't follow anyone, or I couldn't read who they follow.")
+            return
+    else:
+        target = reply_target_event_id(content)
+        if target is None:
+            await notice(request, room_id, _import_follows_usage(config))
+            return
+        try:
+            replied = await app.state.synapse.get_event(room_id, target, as_user_id=bot_mxid(config))
+        except SynapseError:
+            replied = None
+        mxc = ((replied or {}).get("content") or {}).get("url")
+        if not isinstance(mxc, str) or not mxc.startswith("mxc://"):
+            await notice(request, room_id, f"The message you replied to has no file attached. {_import_follows_usage(config)}")
+            return
+        try:
+            download = await app.state.synapse.download_media(mxc)
+        except SynapseError:
+            download = None
+        if download is None:
+            await notice(request, room_id, "Couldn't download that file -- try uploading it again.")
+            return
+        references = parse_follows_list(download.content.decode("utf-8", errors="replace"))
+        if not references:
+            await notice(
+                request, room_id,
+                "That file doesn't list any Bluesky accounts -- expected one handle (alice.bsky.social), DID or "
+                "bsky.app profile link per line.",
+            )
+            return
+    await notice(
+        request, room_id,
+        f"Importing {len(references)} follows -- this can take a while (each new account gets its own room). "
+        "I'll post a summary here when it's done.",
+    )
+    run_in_background(app, run_follows_import(request, account=account, room_id=room_id, references=references))
+
+
+async def run_follows_import(request: Request, *, account: Account, room_id: str, references: list[str]) -> None:
+    """Follow each account in turn, then post one summary. Accounts already
+    followed (and the importer's own, which a copy of their old account's
+    follows can contain) are only counted; each failure is listed with its
+    reason."""
+    app = request.app
+    repository = app.state.repository
+    plc = app.state.config.atproto.plc_directory
+    own = (account.did, app.state.pds.handle_of(account))
+    followed = skipped = 0
+    failures: list[tuple[str, str]] = []
+    try:
+        for reference in references:
+            if reference in own:
+                skipped += 1
+                continue
+            try:
+                identity = await resolve_account(app.state.http_client, reference, plc_directory=plc)
+            except IdentityError as exc:
+                failures.append((reference, str(exc)))
+                continue
+            if identity.did == account.did or await repository.get_follow_rkey(account.did, identity.did) is not None:
+                skipped += 1
+                continue
+            if await _is_local(request, identity):
+                failures.append((f"@{identity.handle}", "an account on this server; following those isn't supported yet"))
+                continue
+            try:
+                await follow(app, account, identity, backfill_in_background=False)
+            except (SynapseError, PdsError):
+                logger.warning("Import follow of %s by %s failed", identity.did, account.did, exc_info=True)
+                failures.append((f"@{identity.handle}", "couldn't follow just now"))
+                continue
+            followed += 1
+    except Exception:
+        logger.exception("Follows import for %s stopped early", account.did)
+        await notice(
+            request, room_id, "The follows import hit an unexpected error and stopped early -- the summary below covers what was done."
+        )
+    summary = f"Follows import finished: {followed} followed, {skipped} already followed (skipped), {len(failures)} failed."
+    if not failures:
+        await notice(request, room_id, summary)
+        return
+    plain = summary + "\n" + "\n".join(f"  - {who}: {reason}" for who, reason in failures)
+    items = "".join(f"<li><code>{html.escape(who)}</code> -- {html.escape(reason)}</li>" for who, reason in failures)
+    await notice(request, room_id, plain, html_message=f"<p>{html.escape(summary)}</p><ul>{items}</ul>")
+
+
+async def _handle_widget(request: Request, *, sender: str, room_id: str) -> None:
+    """Add the bridge's widget to this room (see ``bridge.room_widget``)."""
+    if await add_bridge_widget(request.app, room_id):
+        await notice(request, room_id, "Added the Bluesky Bridge widget to this room -- open it from your client's widgets/apps panel.")
+    else:
+        await notice(request, room_id, "Couldn't add the widget here -- I need permission to change this room's settings.")
 
 
 async def _handle_repost(request: Request, *, sender: str, room_id: str, event: dict, argument: str) -> None:

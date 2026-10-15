@@ -196,6 +196,29 @@ async def list_records(http_client: httpx.AsyncClient, pds: str, did: str, colle
     return list(response.json().get("records") or []) if response is not None else []
 
 
+async def list_all_records(
+    http_client: httpx.AsyncClient, pds: str, did: str, collection: str, *, max_records: int
+) -> list[dict]:
+    """Up to ``max_records`` of the account's records in ``collection``,
+    newest first, a page at a time."""
+    records: list[dict] = []
+    cursor: str | None = None
+    while len(records) < max_records:
+        params: dict[str, Any] = {"repo": did, "collection": collection, "limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        response = await fetch_public(http_client, f"{pds}/xrpc/com.atproto.repo.listRecords", params=params)
+        if response is None:
+            break
+        body = response.json()
+        page = [record for record in body.get("records") or [] if isinstance(record, dict)]
+        records += page
+        cursor = body.get("cursor")
+        if not page or not isinstance(cursor, str) or not cursor:
+            break
+    return records[:max_records]
+
+
 async def get_blob(http_client: httpx.AsyncClient, pds: str, did: str, cid: str, *, max_bytes: int) -> bytes | None:
     response = await fetch_public(
         http_client, f"{pds}/xrpc/com.atproto.sync.getBlob", params={"did": did, "cid": cid}, max_bytes=max_bytes

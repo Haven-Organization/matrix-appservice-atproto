@@ -19,6 +19,7 @@ import logging
 
 from fastapi import FastAPI
 
+from bridge.room_widget import add_bridge_widget
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ async def ensure_user_space(app: FastAPI, matrix_user_id: str) -> str | None:
         logger.warning("Could not create space for %s", matrix_user_id, exc_info=True)
         return None
     await repository.set_user_space(matrix_user_id, space_room_id)
+    await add_bridge_widget(app, space_room_id)
     logger.info("Created space %s for %s", space_room_id, matrix_user_id)
     return space_room_id
 

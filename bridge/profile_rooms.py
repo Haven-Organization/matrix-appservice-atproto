@@ -19,6 +19,7 @@ from bridge.msc4501 import (
 from bridge.pds import PdsError
 from bridge.profile_sync import sync_profile_record
 from bridge.repository import Account
+from bridge.room_widget import add_bridge_widget
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -85,4 +86,5 @@ async def create_profile_room(
         join_rule=app.state.config.bridge.local_profile_room_join_rule,
     )
     logger.info("Created Profile Room %s for %s", room_id, owner)
+    await add_bridge_widget(app, room_id)
     return await bind_profile_room(app, account, room_id)

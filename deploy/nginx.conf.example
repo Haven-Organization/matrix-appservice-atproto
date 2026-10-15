@@ -103,6 +103,14 @@ server {
         proxy_pass http://matrix_appservice_atproto;
     }
 
+    # -- The room widget (]widget): its page and the API it calls ---------------
+    location = /widget {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+    location /widget/ {
+        proxy_pass http://matrix_appservice_atproto;
+    }
+
     # -- The PDS's own did:web document --------------------------------------
     location = /.well-known/did.json {
         proxy_pass http://matrix_appservice_atproto;

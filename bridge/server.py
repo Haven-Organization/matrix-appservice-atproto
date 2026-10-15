@@ -39,7 +39,10 @@ from bridge.matrix_records import register_matrix_sources
 from bridge.notification_poller import notification_loop
 from bridge.pds import Pds, PdsError
 from bridge.record_sources import RecordSources
+from bridge.follows import unfollow_departed
 from bridge.remote_accounts import apply_room_settings
+from bridge.room_widget import add_missing_widgets
+from bridge.widget import router as widget_router
 from bridge.repository import BridgeRepository
 from bridge.storage import open_repository
 from bridge.synapse_client import SynapseClient, SynapseError
@@ -143,6 +146,16 @@ async def _announce_to_relays(pds: Pds, repository: BridgeRepository) -> None:
     await asyncio.sleep(_WILDCARD_SELF_CHECK_DELAY)
     if any(account.plc_registered for account in await repository.list_accounts()):
         pds.nudge_relays()
+
+
+async def _startup_room_passes(app: FastAPI) -> None:
+    """Bring existing rooms into line, one pass after another: their
+    settings, who still follows from them, and the widget."""
+    for room_pass in (apply_room_settings, unfollow_departed, add_missing_widgets):
+        try:
+            await room_pass(app)
+        except Exception:
+            logger.exception("Startup pass %s failed", room_pass.__name__)
 
 
 async def _ensure_chat_declarations(app: FastAPI) -> None:
@@ -257,7 +270,7 @@ def create_app(
         bridge_info_task = asyncio.create_task(refresh_all_bridge_info(app))
         chat_task = asyncio.create_task(chat_loop(app))
         declarations_task = asyncio.create_task(_ensure_chat_declarations(app))
-        room_settings_task = asyncio.create_task(apply_room_settings(app))
+        room_settings_task = asyncio.create_task(_startup_room_passes(app))
         tasks = (
             self_check_task, relay_task, jetstream_task, notifications_task, catch_up_task, bridge_info_task,
             chat_task, declarations_task, room_settings_task,
@@ -287,5 +300,6 @@ def create_app(
     app.include_router(xrpc_router)
     app.include_router(admin_router)
     app.include_router(appservice_router)
+    app.include_router(widget_router)
     app.add_exception_handler(PdsError, pds_error_handler)
     return app

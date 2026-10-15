@@ -354,6 +354,26 @@ class SynapseClient:
         chunk = result.get("chunk") or []
         return chunk[0].get("event_id") if chunk else None
 
+    async def verify_openid_token(self, access_token: str) -> str | None:
+        """The ``@user:server`` a Matrix OpenID token (what a widget gets
+        from its client) belongs to, or ``None`` if it isn't valid. Asks
+        this homeserver's own ``openid/userinfo`` endpoint, which needs no
+        authentication of our own; only tokens for this homeserver's users
+        are ever checked, so no federation lookup is needed."""
+        try:
+            response = await self._client.get(
+                "/_matrix/federation/v1/openid/userinfo", params={"access_token": access_token}
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            sub = response.json().get("sub")
+        except ValueError:
+            return None
+        return sub if isinstance(sub, str) else None
+
     async def is_server_admin(self, user_id: str) -> bool:
         """Whether ``user_id`` is a Synapse server admin. Always False
         without an admin token to ask with."""

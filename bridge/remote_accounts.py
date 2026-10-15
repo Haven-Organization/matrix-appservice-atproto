@@ -37,6 +37,7 @@ from bridge.msc4501 import (
 )
 from bridge.post_mirroring import REPOST_COLLECTION, mirror_post, mirror_repost
 from bridge.repository import RemoteAccount
+from bridge.room_widget import add_bridge_widget
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,7 @@ async def create_remote_room(
     await _mark_profile_room(app, ghost, room_id)
     await _apply_banner(app, identity, ghost, room_id, profile)
     await send_bridge_info(app, room_id=room_id, did=identity.did, display_name=label, avatar_mxc=avatar_mxc)
+    await add_bridge_widget(app, room_id)
     return room_id
 
 

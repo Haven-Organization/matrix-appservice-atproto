@@ -29,8 +29,8 @@ async def send_bridge_info(
     app: FastAPI, *, room_id: str, did: str, display_name: str | None, avatar_mxc: str | None
 ) -> None:
     """Tag ``room_id`` as bridged to the account ``did``. Best-effort: the
-    room is fully usable without it. Safe to repeat -- the homeserver
-    doesn't create a new event for unchanged state."""
+    room is fully usable without it. Safe to repeat: state that already
+    says this is left alone."""
     config = app.state.config
     bot = f"@{config.appservice.bot_localpart}:{config.synapse.server_name}"
     channel: dict = {"id": did}
@@ -43,11 +43,12 @@ async def send_bridge_info(
         # The bot's own avatar doubles as the protocol's icon.
         protocol["avatar_url"] = config.appservice.bot_avatar_mxc
     content = {"bridgebot": bot, "creator": bot, "protocol": protocol, "channel": channel}
+    state_key = f"{PROTOCOL_ID}://{did}"
     for event_type in _EVENT_TYPES:
         try:
-            await app.state.synapse.send_state_event(
-                room_id, event_type, content, as_user_id=bot, state_key=f"{PROTOCOL_ID}://{did}"
-            )
+            if await app.state.synapse.get_room_state(room_id, event_type, state_key, as_user_id=bot) == content:
+                continue
+            await app.state.synapse.send_state_event(room_id, event_type, content, as_user_id=bot, state_key=state_key)
         except SynapseError:
             logger.info("Could not set %s state event in %s", event_type, room_id, exc_info=True)
 

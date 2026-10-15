@@ -39,6 +39,7 @@ from bridge.post_mirroring import render_text
 from bridge.ghost_ids import did_for_ghost, ghost_user_id
 from bridge.remote_accounts import ensure_ghost
 from bridge.repository import Account, ChatRoom, PublishedMedia
+from bridge.room_widget import add_bridge_widget
 from bridge.spaces import add_room_to_space
 from bridge.synapse_client import SynapseError
 
@@ -136,6 +137,7 @@ async def ensure_chat_room(
     )
     await synapse.join_room(room_id, as_user_id=bot)
     await repository.save_chat_room(ChatRoom(room_id, account.did, identity.did, convo_id))
+    await add_bridge_widget(app, room_id)
     await add_room_to_space(app, account.matrix_user_id, room_id)
     logger.info("Created chat room %s for %s with %s", room_id, account.matrix_user_id, identity.handle)
     return room_id

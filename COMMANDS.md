@@ -11,6 +11,8 @@ The bridge is controlled from inside Matrix by either tagging/mentioning the bot
 - A message addressed to the bot is never published as a post, even if the command in it was mistyped.
 - The prefix is configurable (`appservice.command_prefix`). `]` is the default, chosen not to clash with matrix-appservice-activitypub's `;`, so both bots can sit in the same room.
 
+Most of these are also buttons in the bridge's room widget ([`]widget`](#widget)). See [Widget vs. commands](#widget-vs-commands).
+
 Everything that happens without a command (posting, liking, replying, what shows up in which room) is described in [FEATURES.md](FEATURES.md).
 
 ## Contents
@@ -25,8 +27,10 @@ Everything that happens without a command (posting, liking, replying, what shows
   - [`]unfollow`](#unfollow-handleexamplecom)
   - [`]following`](#following)
   - [`]import <url>`](#import-url)
+  - [`]import follows`](#import-follows-handleexamplecom)
   - [`]repost`](#repost-reply-to-a-post)
   - [`]chat` / `]dm`](#chat-handleexamplecom--dm-handleexamplecom)
+  - [`]widget`](#widget)
 - [Advanced/Maintenance](#advancedmaintenance)
   - [`]block`](#block-handleexamplecom)
   - [`]unblock`](#unblock-handleexamplecom)
@@ -38,6 +42,7 @@ Everything that happens without a command (posting, liking, replying, what shows
   - [`]replace room`](#replace-room)
   - [`]replace dm` / `]replace chat`](#replace-dmchat-handleexamplecom)
   - [`]delete profile`](#delete-profile)
+- [Widget vs. commands](#widget-vs-commands)
 
 ---
 
@@ -115,7 +120,7 @@ Following and everyday commands.
 
 **Who can run it:** Requires an identity.
 
-**Notes:** Leaving (or being removed from) a Remote User Room does the same thing. The room itself stays for anyone else here who follows the account.
+**Notes:** Leaving (or being removed from) a Remote User Room does the same thing, so nobody stays following an account (and has its posts collected) without being in the room they arrive in. A leave the bridge missed, say while it was down, is caught the next time it starts. The room itself stays for anyone else here who follows the account.
 
 ---
 
@@ -134,6 +139,18 @@ Following and everyday commands.
 **What it does:** Mirrors that one post into its author's Remote User Room, creating the room if needed, and invites you to it, without following the author.
 
 **Who can run it:** Any local user.
+
+---
+
+### `]import follows [handle.example.com]`
+
+**Syntax:** `]import follows handle.example.com` (or `]import following`), naming any Bluesky account: a leading `@`, a DID or a `bsky.app/profile/...` link also work. Or upload a file and send `]import follows` with no argument as a reply to it (a plain or thread reply both work).
+
+**What it does:** Follows every account on the list, one after another, exactly as `]follow` would: with a handle, everyone that account follows (read from its own repository, so it works for any account, such as the one you're moving here from); with a file, every account it lists. The file is plain text with one handle, DID or `bsky.app` profile link per line. A CSV works too: only its first column is read, and a header row is skipped. Accounts you already follow, and your own, are skipped. When it's done the bot posts one summary: how many were followed and skipped, and each failure with its reason.
+
+**Who can run it:** Requires an identity.
+
+**Notes:** Runs in the background and can take minutes, since each newly followed account gets its own room and its recent posts. Bluesky has no follows export of its own, which is why a handle is the main way in. matrix-appservice-activitypub's version takes a fediverse export file instead. The widget accepts the file directly, without needing it to be an upload you reply to. Following accounts hosted on this bridge isn't supported yet, so they are listed as failures.
 
 ---
 
@@ -166,6 +183,18 @@ Following and everyday commands.
 - Redacting a message you sent deletes it for you on Bluesky; the chat service doesn't let you delete it for the other person. A message they delete is redacted here.
 - Chat doesn't go through your repository; it lives on Bluesky's chat service, which the bridge talks to on your behalf. New messages are checked every `atproto.chat_poll_seconds` (default 10).
 - The bridge has no end-to-end encryption support. If your homeserver forces encryption on new private rooms, you'll be told the chat room can't work until a server admin changes that; see [`]replace chat`](#replace-dmchat-handleexamplecom) for replacing such a room afterwards.
+
+---
+
+### `]widget`
+
+**Syntax:** `]widget`, run in whatever room should get it.
+
+**What it does:** Adds the bridge's room widget: buttons for most of the commands here, suited to the kind of room it's in. See [Widget vs. commands](#widget-vs-commands).
+
+**Who can run it:** Any local user, in any room the bot is in and may change the settings of.
+
+**Notes:** Every room the bridge creates gets the widget by itself, and rooms made before the widget existed get it once, the next time the bridge starts. A room's members can remove it, and it isn't put back. Running `]widget` adds a fresh one each time, so running it again adds a second rather than doing nothing; remove a stale one in your client's widgets panel.
 
 ---
 
@@ -299,3 +328,15 @@ The commands below directly manipulate the binding between a Matrix room and a B
 **Who can run it:** Any local user with an identity. It always acts on whoever confirms, never on someone else.
 
 **Notes:** Irreversible, and the only command here that is. The Profile Room itself is left for you to leave when you like. Running `]create profile` afterwards gives you a brand new account with a different DID; nothing carries over.
+
+---
+
+## Widget vs. commands
+
+The room widget is a small web page served by the bridge (`/widget` under `bridge.public_base_url`) that widget-capable clients such as Element show in a room. It never trusts what its own address says about who you are: it asks your client for a Matrix OpenID token, which your homeserver vouches for, and it only acts in a room you are joined to. Each button runs the same handler the command does, with the same checks, and answers with the same notice in the room.
+
+It covers `create profile`, `follow`, `unfollow`, `block`, `unblock`, `chat`, `import <url>`, `import follows` (from a handle, or a file handed over directly), `backfill` (including the admin-only custom count), `banner` (an image handed over directly), `link profile`, `unlink profile`, `replace room` and `delete profile`. It also shows a list of who you follow, each with an Unfollow button.
+
+For `link profile`, `unlink profile` and `replace room` the page asks "are you sure?" itself and then acts straight away, as matrix-appservice-activitypub's does. `delete profile` is the exception: it can never be undone, since the DID is retired for good, so the button only posts the usual warning in the room, and you confirm it there by replying "confirm".
+
+It leaves out `repost`, which needs a specific post to reply to; `refresh`, an admin repair tool; and `status`, `following` and `help`, which the page shows anyway or doesn't need.
