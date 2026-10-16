@@ -34,7 +34,7 @@ from fastapi import FastAPI
 
 from bridge.atproto.identity import resolve_did
 from bridge.matrix_records import POST_COLLECTION, PROFILE_COLLECTION
-from bridge.notification_poller import notify_directly, nudge_notifications
+from bridge.notification_poller import notify_directly, nudge_notifications, posts_in_flight
 from bridge.post_mirroring import REPOST_COLLECTION, mirror_post, mirror_repost, unmirror, unmirror_post
 from bridge.reaction_mirroring import LIKE_EMOJI, REPOST_EMOJI, mirror_reaction, unmirror_reaction
 from bridge.remote_accounts import catch_up, note_post_seen, note_repost_seen, refresh_remote_account
@@ -112,9 +112,18 @@ async def handle_event(app: FastAPI, event: dict[str, Any], accounts: dict[str, 
     if collection == PROFILE_COLLECTION and operation in ("create", "update"):
         await _refresh(app, remote)
     elif collection == POST_COLLECTION and operation == "create" and isinstance(commit.get("record"), dict):
-        await mirror_post(
-            app, remote, rkey, commit["record"], cid=str(commit.get("cid", "")), import_conversation=True
-        )
+        # A notification about this post, found meanwhile, waits for it.
+        uri = f"at://{remote.did}/{POST_COLLECTION}/{rkey}"
+        in_flight = posts_in_flight(app)
+        done = in_flight.setdefault(uri, asyncio.Event())
+        try:
+            await mirror_post(
+                app, remote, rkey, commit["record"], cid=str(commit.get("cid", "")), import_conversation=True
+            )
+        finally:
+            done.set()
+            if in_flight.get(uri) is done:
+                del in_flight[uri]
         await note_post_seen(app, remote.did, rkey)
         await _notify(app, remote, collection, rkey, commit)
     elif collection == POST_COLLECTION and operation == "delete":

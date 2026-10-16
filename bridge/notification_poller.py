@@ -239,6 +239,32 @@ async def _mirror_reply(app: FastAPI, notification: dict[str, Any]) -> None:
     await mirror_post(app, remote, parts[2], record, cid=str(notification.get("cid", "")))
 
 
+# How long a notification waits for the live feed to finish mirroring the
+# post it is about (importing a conversation can take a while).
+_MIRROR_WAIT_SECONDS = 120.0
+
+
+def posts_in_flight(app: FastAPI) -> dict[str, asyncio.Event]:
+    """Posts the live feed is mirroring right now, by URI, each set once
+    it is done."""
+    in_flight = getattr(app.state, "posts_in_flight", None)
+    if in_flight is None:
+        in_flight = app.state.posts_in_flight = {}
+    return in_flight
+
+
+async def _await_mirroring(app: FastAPI, uri: str) -> None:
+    """If the live feed is mirroring ``uri``, wait for it: its
+    notification can then link to it in Matrix instead of on Bluesky."""
+    done = posts_in_flight(app).get(uri)
+    if done is None:
+        return
+    try:
+        await asyncio.wait_for(done.wait(), _MIRROR_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.info("Gave up waiting for %s to be mirrored before notifying", uri)
+
+
 def _poll_lock(app: FastAPI, did: str) -> asyncio.Lock:
     locks = getattr(app.state, "notification_locks", None)
     if locks is None:
@@ -280,6 +306,8 @@ async def _poll_account(app: FastAPI, account: Account) -> int:
                 await _mirror_reply(app, notification)
             except Exception:
                 logger.exception("Mirroring reply %s failed", notification.get("uri"))
+        if uri not in await _delivered(app, account.did):
+            await _await_mirroring(app, uri)
         if uri in await _delivered(app, account.did):
             handled += 1  # the live feed got there first
         else:

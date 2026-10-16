@@ -24,6 +24,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from bridge.msc4501 import SOCIAL_BODY_FIELD
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,11 @@ def scaled_dimensions(width: Any, height: Any, max_dimension: int) -> tuple[int,
 
 def post_text_of(content: dict[str, Any]) -> str:
     """The text of a post's Matrix event: its body, unless that is just
-    the filename of an uncaptioned image or video."""
-    body = str(content.get("body") or "").strip()
+    the filename of an uncaptioned image or video. For a quote-post or a
+    cross-posted reply, the author's own words (MSC4501's body), without
+    the bridge's "reposted X's post" or "Reply to" lines."""
+    own = content.get(SOCIAL_BODY_FIELD)
+    body = (own if isinstance(own, str) and own.strip() else str(content.get("body") or "")).strip()
     filename = str(content.get("filename") or "").strip()
     if content.get("msgtype") in ("m.image", "m.video") and (not filename or body == filename):
         return ""
