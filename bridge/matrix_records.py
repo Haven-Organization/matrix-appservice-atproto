@@ -12,6 +12,10 @@ contract:
 - Once records exist under a version it must never change. To convert
   differently, add ``..._v2`` and write new records with ``"v": 2``;
   existing records keep rebuilding with the version they were made with.
+
+Posts: v1 is the original. v2 adds ``trailing``, a link dropped from the
+end of the text because the post quotes what it links to (as the Bluesky
+app does with a pasted post link); with no ``trailing`` it is v1.
 """
 
 from __future__ import annotations
@@ -42,6 +46,8 @@ _MAX_DESCRIPTION_LENGTH = 256
 
 MEDIA_MSGTYPES = ("m.image", "m.video", "m.audio", "m.file")
 EXTERNAL_EMBED_TYPE = "app.bsky.embed.external"
+RECORD_EMBED_TYPE = "app.bsky.embed.record"
+RECORD_WITH_MEDIA_EMBED_TYPE = "app.bsky.embed.recordWithMedia"
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _URL_TRAILING_PUNCTUATION = ".,;:!?)]}"
@@ -83,19 +89,23 @@ def message_body(content: dict[str, Any]) -> str:
     return body
 
 
-def post_text(event: dict[str, Any], *, offset: int = 0) -> str | None:
+def post_text(event: dict[str, Any], *, offset: int = 0, trailing: str | None = None) -> str | None:
     """The text a Matrix message would post: a text message's body, or a
     media message's caption (possibly empty). ``None`` if the message is of
     a kind that can't be a post at all.
 
     ``offset`` skips that many leading characters of the body: how a
     command's own argument (``]repost <caption>``) becomes a post without
-    the command word."""
+    the command word. ``trailing`` is dropped from the end of the text if
+    it is there: a link the post quotes instead, which may leave a text
+    message with no text of its own."""
     content = event.get("content") or {}
     msgtype = content.get("msgtype")
     body = message_body(content)[offset:].strip()
+    if trailing and body.endswith(trailing):
+        body = body[: -len(trailing)].rstrip()
     if msgtype == "m.text":
-        return body or None
+        return body if body or trailing else None
     if msgtype in MEDIA_MSGTYPES:
         filename = content.get("filename")
         has_caption = isinstance(filename, str) and filename and filename != content.get("body")
@@ -120,12 +130,17 @@ def split_text(text: str, limit: int = MAX_POST_LENGTH) -> list[str]:
     return parts
 
 
-def post_parts(event: dict[str, Any], *, offset: int = 0) -> list[str] | None:
+def post_parts(event: dict[str, Any], *, offset: int = 0, trailing: str | None = None) -> list[str] | None:
     """The text of each post this message becomes: one, or a thread of
     several if it is longer than a post may be. ``None`` if the message
     can't be a post."""
-    text = post_text(event, offset=offset)
+    text = post_text(event, offset=offset, trailing=trailing)
     return None if text is None else split_text(text)
+
+
+def link_urls(text: str) -> list[str]:
+    """Every link in ``text``, as ``_link_facets`` marks them up."""
+    return [match.group(0).rstrip(_URL_TRAILING_PUNCTUATION) for match in _URL_RE.finditer(text)]
 
 
 def _link_facets(text: str) -> list[dict[str, Any]]:
@@ -152,6 +167,18 @@ def post_record_v1(
     reply: dict[str, Any] | None = None,
     offset: int = 0,
 ) -> dict[str, Any] | None:
+    return post_record_v2(event, part=part, embed=embed, reply=reply, offset=offset)
+
+
+def post_record_v2(
+    event: dict[str, Any],
+    *,
+    part: int = 0,
+    embed: dict[str, Any] | None = None,
+    reply: dict[str, Any] | None = None,
+    offset: int = 0,
+    trailing: str | None = None,
+) -> dict[str, Any] | None:
     """The ``app.bsky.feed.post`` for piece ``part`` of a Matrix message;
     ``None`` if the event can no longer produce it (redacted, not a
     postable kind).
@@ -162,10 +189,12 @@ def post_record_v1(
     the caller supplies them. The one exception is a link card's title,
     which is the file's name and so is taken from the event here rather
     than kept anywhere else.
+
+    ``trailing`` (v2 only; v1 is v2 without it): see ``post_text``.
     """
     if is_redacted(event):
         return None
-    parts = post_parts(event, offset=offset)
+    parts = post_parts(event, offset=offset, trailing=trailing)
     if parts is None or part >= len(parts):
         return None
     text = parts[part]
@@ -180,6 +209,9 @@ def post_record_v1(
     if embed is not None:
         if embed.get("$type") == EXTERNAL_EMBED_TYPE:
             embed = {**embed, "external": {**embed["external"], "title": media_filename(event)}}
+        elif embed.get("$type") == RECORD_WITH_MEDIA_EMBED_TYPE and embed["media"].get("$type") == EXTERNAL_EMBED_TYPE:
+            media = embed["media"]
+            embed = {**embed, "media": {**media, "external": {**media["external"], "title": media_filename(event)}}}
         record["embed"] = embed
     if reply is not None:
         record["reply"] = reply
@@ -216,10 +248,19 @@ def post_source(
     embed: dict[str, Any] | None = None,
     reply: dict[str, Any] | None = None,
     offset: int = 0,
+    trailing: str | None = None,
 ) -> dict[str, Any]:
-    source: dict[str, Any] = {"kind": "matrix_post", "v": 1, "room_id": room_id, "event_id": event_id, "part": part}
+    source: dict[str, Any] = {
+        "kind": "matrix_post",
+        "v": 2 if trailing else 1,
+        "room_id": room_id,
+        "event_id": event_id,
+        "part": part,
+    }
     if offset:
         source["offset"] = offset
+    if trailing:
+        source["trailing"] = trailing
     if embed is not None:
         source["embed"] = lexjson.to_json(embed)
     if reply is not None:
@@ -260,7 +301,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
     event that is confirmed missing or redacted reports the record gone."""
 
     async def rebuild_post(source: dict[str, Any]) -> Any:
-        if source.get("v") != 1:
+        if source.get("v") not in (1, 2):
             raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
         event = await synapse.get_event(source["room_id"], source["event_id"], as_user_id=bot_mxid)
         if event is None:
@@ -277,8 +318,17 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
             return None
         embed = lexjson.from_json(source["embed"]) if "embed" in source else None
         reply = lexjson.from_json(source["reply"]) if "reply" in source else None
-        return post_record_v1(
-            event, part=int(source.get("part", 0)), embed=embed, reply=reply, offset=int(source.get("offset", 0))
+        if source["v"] == 1:
+            return post_record_v1(
+                event, part=int(source.get("part", 0)), embed=embed, reply=reply, offset=int(source.get("offset", 0))
+            )
+        return post_record_v2(
+            event,
+            part=int(source.get("part", 0)),
+            embed=embed,
+            reply=reply,
+            offset=int(source.get("offset", 0)),
+            trailing=str(source["trailing"]),
         )
 
     async def rebuild_profile(source: dict[str, Any]) -> Any:

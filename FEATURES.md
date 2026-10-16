@@ -13,6 +13,7 @@ Most of the bridge needs no commands at all.
 - An **MP4 video** is published as a native video.
 - **Any other file** (documents, audio, other video formats) is published as a link card pointing at the file, served by the bridge.
 - A caption on any of these becomes the post's text.
+- A **link to a Bluesky post** (`bsky.app/profile/.../post/...`) makes it a quote of that post, as pasting one into the Bluesky app does. If the link comes last it is dropped from the text, so a message that is only the link is a bare quote. The first link to a post that can be found is quoted; one that can't stays an ordinary link. A captioned image or video becomes a quote with that media.
 - **Redacting** a message deletes everything published from it.
 - Changing the room's **name, topic or avatar** changes your display name, bio and avatar.
 - Replies to your posts from Bluesky appear as a thread under the post, each from its author's ghost user, and you can answer in the thread.
@@ -24,7 +25,7 @@ These work on a mirrored Bluesky post and on a local user's own post alike, and 
 
 - **Reacting with 👍**, in any skin tone, likes the post. Removing the reaction removes the like. Bluesky has no other reactions, so other emoji stay in Matrix.
 - **Reacting with 🔁** reposts it (see [`]repost`](COMMANDS.md#repost-reply-to-a-post)).
-- **Replying** to it, as a rich reply or in its thread, publishes a reply from your account. Text, images, video and files work as they do in your Profile Room, and a long reply becomes a chain. Redacting the message deletes the reply.
+- **Replying** to it, as a rich reply or in its thread, publishes a reply from your account. Text, images, video, files and post links work as they do in your Profile Room, and a long reply becomes a chain. Redacting the message deletes the reply.
 
 Going the other way, a like or repost made on Bluesky of a post that is in Matrix shows as a 👍 or 🔁 reaction on the Matrix message, from that account's ghost user. For your own posts this covers everyone (you are also notified); for other posts it covers accounts followed here. A like removed on Bluesky is un-reacted here if it was by an account followed here; for anyone else the bridge is never told, so the reaction stays.
 

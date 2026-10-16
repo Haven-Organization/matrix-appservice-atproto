@@ -27,15 +27,18 @@ from bridge.matrix_records import (
     MAX_THREAD_POSTS,
     MEDIA_MSGTYPES,
     POST_COLLECTION,
+    RECORD_EMBED_TYPE,
+    RECORD_WITH_MEDIA_EMBED_TYPE,
     media_filename,
     post_parts,
-    post_record_v1,
+    post_record_v2,
     post_source,
+    post_text,
 )
 from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.pds import PdsError, Write
-from bridge.post_lookup import PostRef
+from bridge.post_lookup import PostRef, find_linked_post
 from bridge.profile_sync import sync_profile_record
 from bridge.repository import Account, BlobRow, PublishedMedia
 from bridge.synapse_client import SynapseError
@@ -146,12 +149,24 @@ async def publish_event_as_posts(
     ``reply_to`` makes it a reply to that post. ``quote`` makes it a
     quote-post of that post. ``offset`` skips that many leading characters
     of the text (a command word).
+
+    Without ``quote``, a link to a post in the text quotes that post, as
+    the Bluesky app does with a pasted post link; the link is dropped from
+    the text if it comes last.
     """
     repository = request.app.state.repository
     room_id = event["room_id"]
     event_id = event["event_id"]
     content = event.get("content") or {}
-    parts = post_parts(event, offset=offset)
+    quoted = quote.strong_ref() if quote is not None else None
+    trailing = None
+    text = post_text(event, offset=offset)
+    if quoted is None and text:
+        linked = await find_linked_post(request.app, text)
+        if linked is not None:
+            url, quoted = linked
+            trailing = url if text.endswith(url) else None
+    parts = post_parts(event, offset=offset, trailing=trailing)
     if parts is None:
         if content.get("msgtype") != "m.text":  # an empty text message is just ignored
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
@@ -164,12 +179,13 @@ async def publish_event_as_posts(
         )
         return None
     embed = None
-    if quote is not None:
-        embed = {"$type": "app.bsky.embed.record", "record": quote.strong_ref()}
-    elif content.get("msgtype") in MEDIA_MSGTYPES:
+    if content.get("msgtype") in MEDIA_MSGTYPES:
         embed = await _build_embed(request, account, event)
         if embed is None:
             return None
+    if quoted is not None:
+        record_embed = {"$type": RECORD_EMBED_TYPE, "record": quoted}
+        embed = {"$type": RECORD_WITH_MEDIA_EMBED_TYPE, "record": record_embed, "media": embed} if embed else record_embed
 
     # One post, or a thread: each further piece replies to the one before.
     pds = request.app.state.pds
@@ -180,7 +196,7 @@ async def publish_event_as_posts(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v1(event, part=index, embed=part_embed, reply=reply, offset=offset)
+        record = post_record_v2(event, part=index, embed=part_embed, reply=reply, offset=offset, trailing=trailing)
         if record is None:
             return None
         rkey = pds.next_record_key()
@@ -190,7 +206,9 @@ async def publish_event_as_posts(
                 POST_COLLECTION,
                 rkey,
                 record,
-                source=post_source(room_id, event_id, part=index, embed=part_embed, reply=reply, offset=offset),
+                source=post_source(
+                    room_id, event_id, part=index, embed=part_embed, reply=reply, offset=offset, trailing=trailing
+                ),
                 matrix_event_id=event_id,
             )
         )

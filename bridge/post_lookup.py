@@ -10,13 +10,16 @@ user's own post made from a Matrix message (``records``).
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass
 
 from fastapi import FastAPI
 
-from bridge.atproto.identity import get_record, resolve_did
-from bridge.matrix_records import POST_COLLECTION
+from bridge.atproto.identity import IdentityError, get_record, parse_account_reference, resolve_account, resolve_did
+from bridge.matrix_records import POST_COLLECTION, link_urls
 from bridge.ghost_ids import ghost_user_id
+from bridge.pds import PdsError
 
 
 @dataclass(frozen=True)
@@ -137,3 +140,47 @@ async def locate_post_by_event(app: FastAPI, room_id: str, event_id: str, *, las
         return None
     row = rows[-1] if last_part else rows[0]
     return await _local_ref(app, row.did, row.rkey, event_id=event_id)
+
+
+logger = logging.getLogger(__name__)
+
+# A post's web address, as bsky.app (and other ATProto web clients) write it.
+_POST_LINK_RE = re.compile(r"^https?://[^/]+/profile/([^/?#]+)/post/([A-Za-z0-9._:~-]+)/?$")
+
+
+async def find_linked_post(app: FastAPI, text: str) -> tuple[str, dict[str, str]] | None:
+    """The first post ``text`` links to that can be found -- its link as
+    written, and a reference to quote it by. ``None`` if there is none."""
+    repository = app.state.repository
+    for url in link_urls(text):
+        match = _POST_LINK_RE.match(url)
+        reference = parse_account_reference(match.group(1)) if match else None
+        if match is None or reference is None:
+            continue
+        rkey = match.group(2)
+        # A local account's post is in this bridge's own records.
+        try:
+            local = await app.state.pds.resolve_repo(reference)
+        except PdsError:
+            local = None
+        if local is not None:
+            row = await repository.get_record(local.did, POST_COLLECTION, rkey)
+            uri, cid = f"at://{local.did}/{POST_COLLECTION}/{rkey}", row.cid if row is not None else ""
+        else:
+            # Best effort: a link that can't be followed up just stays a link.
+            try:
+                identity = await resolve_account(
+                    app.state.http_client, reference, plc_directory=app.state.config.atproto.plc_directory
+                )
+                uri = f"at://{identity.did}/{POST_COLLECTION}/{rkey}"
+                response = await get_record(app.state.http_client, identity.pds, identity.did, POST_COLLECTION, rkey)
+                cid = str((response or {}).get("cid") or "")
+            except IdentityError:
+                continue
+            except Exception:
+                logger.warning("Looking up linked post %s failed", url, exc_info=True)
+                continue
+        if cid:
+            return url, {"uri": uri, "cid": cid}
+        logger.info("Linked post %s couldn't be found, so it isn't quoted", uri)
+    return None
