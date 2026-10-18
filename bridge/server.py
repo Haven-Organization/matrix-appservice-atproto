@@ -116,11 +116,14 @@ class PublicCors:
     explorers, handle checkers -- fetch ``/xrpc/...`` and
     ``/.well-known/...`` straight from the visitor's browser, which
     refuses to show them an answer that doesn't carry this permission, so
-    without it they report the server as unreachable. Nothing here relies
+    without it they report the server as unreachable. Files linked from
+    posts (``/media/...``) need it too: their CSP sandbox gives a video
+    opened directly an opaque origin, so the browser's own player fetches
+    the file cross-origin and is refused without it. Nothing here relies
     on cookies, so allowing every origin gives nothing away. The Matrix
     and admin routes are left alone: no browser has business there."""
 
-    _PUBLIC_PREFIXES = ("/xrpc/", "/.well-known/")
+    _PUBLIC_PREFIXES = ("/xrpc/", "/.well-known/", "/media/")
 
     def __init__(self, app: ASGIApp) -> None:
         self._app = app

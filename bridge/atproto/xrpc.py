@@ -20,6 +20,7 @@ Errors follow the XRPC convention: HTTP 400 (502 if Matrix can't be reached) wit
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -202,10 +203,13 @@ async def sync_list_repos(request: Request, limit: int = 500, cursor: str | None
 
 
 # Blobs and published files are other people's uploads served from this
-# origin: never let a browser sniff or run them.
+# origin: never let a browser sniff or run them. Opening a video or audio
+# file directly gives a page whose player loads the file itself and styles
+# its controls inline, so those two are allowed (as Synapse does for its
+# media); nothing can run scripts.
 _UNTRUSTED_CONTENT_HEADERS = {
     "X-Content-Type-Options": "nosniff",
-    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Content-Security-Policy": "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
 }
 _INLINE_SAFE_TYPE_PREFIXES = ("image/", "video/", "audio/")
 
@@ -253,7 +257,41 @@ async def get_published_media(request: Request, server_name: str, media_id: str)
         disposition = "attachment" + disposition[disposition.index(";") :] if ";" in disposition else "attachment"
     if disposition:
         headers["Content-Disposition"] = disposition
-    return Response(download.content, media_type=download.content_type, headers=headers)
+    headers["Accept-Ranges"] = "bytes"
+    body = download.content
+    span = _byte_range(request.headers.get("range"), len(body))
+    if span is None:
+        return Response(body, media_type=download.content_type, headers=headers)
+    if span is False:
+        headers["Content-Range"] = f"bytes */{len(body)}"
+        return Response(status_code=416, headers=headers)
+    start, end = span
+    headers["Content-Range"] = f"bytes {start}-{end}/{len(body)}"
+    return Response(body[start : end + 1], status_code=206, media_type=download.content_type, headers=headers)
+
+
+def _byte_range(header: str | None, size: int) -> tuple[int, int] | None | Literal[False]:
+    """The span a single-range ``Range`` header asks for, as inclusive
+    offsets. ``None`` means serve the whole file (no header, or one this
+    doesn't handle, such as several ranges); ``False`` means the range lies
+    outside the file. Video players seek with these, and some won't play
+    a file served without them."""
+    if not header or not header.startswith("bytes=") or "," in header:
+        return None
+    first, _, last = header[len("bytes=") :].strip().partition("-")
+    try:
+        if not first:  # "-N": the last N bytes
+            length = int(last)
+            if length <= 0:
+                return False
+            return max(size - length, 0), size - 1
+        start = int(first)
+        end = min(int(last), size - 1) if last else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return False
+    return start, end
 
 
 @router.websocket("/xrpc/com.atproto.sync.subscribeRepos")
