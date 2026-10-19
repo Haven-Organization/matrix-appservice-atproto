@@ -15,7 +15,12 @@ contract:
 
 Posts: v1 is the original. v2 adds ``trailing``, a link dropped from the
 end of the text because the post quotes what it links to (as the Bluesky
-app does with a pasted post link); with no ``trailing`` it is v1.
+app does with a pasted post link); with no ``trailing`` it is v1. v3
+replaces it with ``drop_link_to``, the address of the quoted post: the
+link itself is found again in the event (``quoted_link_suffix``) rather
+than kept, since it is part of what the user wrote. (Every piece of a
+thread carries the address, as only the first carries the quote.) New
+records are v1 or v3; v2 is only read.
 """
 
 from __future__ import annotations
@@ -159,6 +164,29 @@ def _link_facets(text: str) -> list[dict[str, Any]]:
     return facets
 
 
+# A post's web address, as bsky.app (and other ATProto web clients) write it:
+# the account (handle or DID) and the post's record key.
+POST_LINK_RE = re.compile(r"^https?://[^/]+/profile/([^/?#]+)/post/([A-Za-z0-9._:~-]+)/?$")
+
+
+def quoted_link_suffix(event: dict[str, Any], *, offset: int = 0, quoted: str | None = None) -> str | None:
+    """The link to post ``quoted`` that ends the message's text, if it does
+    -- what a quote-post drops from its text. It must be the last link and
+    nothing may follow it, and its record key must be the quoted post's.
+    (The account in it isn't compared: a handle can't be checked without
+    asking the network, and a record key is unique enough on its own.)"""
+    if not quoted:
+        return None
+    body = message_body(event.get("content") or {})[offset:].strip()
+    urls = link_urls(body)
+    if not urls or not body.endswith(urls[-1]):
+        return None
+    match = POST_LINK_RE.match(urls[-1])
+    if match is None or quoted.rsplit("/", 1)[-1] != match.group(2):
+        return None
+    return urls[-1]
+
+
 def post_record_v1(
     event: dict[str, Any],
     *,
@@ -191,6 +219,7 @@ def post_record_v2(
     than kept anywhere else.
 
     ``trailing`` (v2 only; v1 is v2 without it): see ``post_text``.
+    v3 is v2 with ``trailing`` found in the event (``post_record_v3``).
     """
     if is_redacted(event):
         return None
@@ -216,6 +245,21 @@ def post_record_v2(
     if reply is not None:
         record["reply"] = reply
     return record
+
+
+def post_record_v3(
+    event: dict[str, Any],
+    *,
+    part: int = 0,
+    embed: dict[str, Any] | None = None,
+    reply: dict[str, Any] | None = None,
+    offset: int = 0,
+    drop_link_to: str | None = None,
+) -> dict[str, Any] | None:
+    """v2, but the dropped link is found in the event rather than stored:
+    the link to post ``drop_link_to`` ending the text, if there is one."""
+    trailing = quoted_link_suffix(event, offset=offset, quoted=drop_link_to)
+    return post_record_v2(event, part=part, embed=embed, reply=reply, offset=offset, trailing=trailing)
 
 
 def profile_record_v1(
@@ -248,19 +292,19 @@ def post_source(
     embed: dict[str, Any] | None = None,
     reply: dict[str, Any] | None = None,
     offset: int = 0,
-    trailing: str | None = None,
+    drop_link_to: str | None = None,
 ) -> dict[str, Any]:
     source: dict[str, Any] = {
         "kind": "matrix_post",
-        "v": 2 if trailing else 1,
+        "v": 3 if drop_link_to else 1,
         "room_id": room_id,
         "event_id": event_id,
         "part": part,
     }
     if offset:
         source["offset"] = offset
-    if trailing:
-        source["trailing"] = trailing
+    if drop_link_to:
+        source["drop_link_to"] = drop_link_to
     if embed is not None:
         source["embed"] = lexjson.to_json(embed)
     if reply is not None:
@@ -301,7 +345,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
     event that is confirmed missing or redacted reports the record gone."""
 
     async def rebuild_post(source: dict[str, Any]) -> Any:
-        if source.get("v") not in (1, 2):
+        if source.get("v") not in (1, 2, 3):
             raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
         event = await synapse.get_event(source["room_id"], source["event_id"], as_user_id=bot_mxid)
         if event is None:
@@ -322,13 +366,22 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
             return post_record_v1(
                 event, part=int(source.get("part", 0)), embed=embed, reply=reply, offset=int(source.get("offset", 0))
             )
-        return post_record_v2(
+        if source["v"] == 2:
+            return post_record_v2(
+                event,
+                part=int(source.get("part", 0)),
+                embed=embed,
+                reply=reply,
+                offset=int(source.get("offset", 0)),
+                trailing=str(source["trailing"]),
+            )
+        return post_record_v3(
             event,
             part=int(source.get("part", 0)),
             embed=embed,
             reply=reply,
             offset=int(source.get("offset", 0)),
-            trailing=str(source["trailing"]),
+            drop_link_to=source.get("drop_link_to"),
         )
 
     async def rebuild_profile(source: dict[str, Any]) -> Any:

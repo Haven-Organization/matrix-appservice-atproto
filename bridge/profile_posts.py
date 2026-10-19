@@ -31,9 +31,10 @@ from bridge.matrix_records import (
     RECORD_WITH_MEDIA_EMBED_TYPE,
     media_filename,
     post_parts,
-    post_record_v2,
+    post_record_v3,
     post_source,
     post_text,
+    quoted_link_suffix,
 )
 from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
@@ -164,8 +165,11 @@ async def publish_event_as_posts(
     if quoted is None and text:
         linked = await find_linked_post(request.app, text)
         if linked is not None:
-            url, quoted = linked
-            trailing = url if text.endswith(url) else None
+            _url, quoted = linked
+            # The same test the record runs whenever it is rebuilt, so the
+            # two can't disagree.
+            trailing = quoted_link_suffix(event, offset=offset, quoted=quoted["uri"])
+    drop_link_to = quoted["uri"] if trailing is not None else None
     parts = post_parts(event, offset=offset, trailing=trailing)
     if parts is None:
         if content.get("msgtype") != "m.text":  # an empty text message is just ignored
@@ -196,7 +200,9 @@ async def publish_event_as_posts(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v2(event, part=index, embed=part_embed, reply=reply, offset=offset, trailing=trailing)
+        record = post_record_v3(
+            event, part=index, embed=part_embed, reply=reply, offset=offset, drop_link_to=drop_link_to
+        )
         if record is None:
             return None
         rkey = pds.next_record_key()
@@ -207,7 +213,7 @@ async def publish_event_as_posts(
                 rkey,
                 record,
                 source=post_source(
-                    room_id, event_id, part=index, embed=part_embed, reply=reply, offset=offset, trailing=trailing
+                    room_id, event_id, part=index, embed=part_embed, reply=reply, offset=offset, drop_link_to=drop_link_to
                 ),
                 matrix_event_id=event_id,
             )

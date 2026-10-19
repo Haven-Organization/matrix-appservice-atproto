@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 
 from fastapi import FastAPI
 
 from bridge.atproto.identity import IdentityError, get_record, parse_account_reference, resolve_account, resolve_did
-from bridge.matrix_records import POST_COLLECTION, link_urls
+from bridge.matrix_records import POST_COLLECTION, POST_LINK_RE, link_urls
 from bridge.ghost_ids import ghost_user_id
 from bridge.pds import PdsError
 
@@ -144,8 +143,6 @@ async def locate_post_by_event(app: FastAPI, room_id: str, event_id: str, *, las
 
 logger = logging.getLogger(__name__)
 
-# A post's web address, as bsky.app (and other ATProto web clients) write it.
-_POST_LINK_RE = re.compile(r"^https?://[^/]+/profile/([^/?#]+)/post/([A-Za-z0-9._:~-]+)/?$")
 
 
 async def find_linked_post(app: FastAPI, text: str) -> tuple[str, dict[str, str]] | None:
@@ -153,7 +150,7 @@ async def find_linked_post(app: FastAPI, text: str) -> tuple[str, dict[str, str]
     written, and a reference to quote it by. ``None`` if there is none."""
     repository = app.state.repository
     for url in link_urls(text):
-        match = _POST_LINK_RE.match(url)
+        match = POST_LINK_RE.match(url)
         reference = parse_account_reference(match.group(1)) if match else None
         if match is None or reference is None:
             continue
