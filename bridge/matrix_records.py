@@ -21,6 +21,10 @@ link itself is found again in the event (``quoted_link_suffix``) rather
 than kept, since it is part of what the user wrote. (Every piece of a
 thread carries the address, as only the first carries the quote.) New
 records are v1 or v3; v2 is only read.
+
+Profiles: v1 is the original. v2 adds ``pinned``, the post pinned in the
+Profile Room (``{"event_id", "ref"}``, ``ref`` a strong reference to it);
+with no ``pinned`` it is v1.
 """
 
 from __future__ import annotations
@@ -284,6 +288,22 @@ def profile_record_v1(
     return record
 
 
+def profile_record_v2(
+    name: str | None,
+    topic: str | None,
+    *,
+    avatar: dict[str, Any] | None = None,
+    banner: dict[str, Any] | None = None,
+    pinned_post: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """v1 plus ``pinnedPost``: the post pinned in the Profile Room, as a
+    strong reference fixed when it was pinned (see ``bridge.profile_sync``)."""
+    record = profile_record_v1(name, topic, avatar=avatar, banner=banner)
+    if pinned_post is not None:
+        record["pinnedPost"] = pinned_post
+    return record
+
+
 def post_source(
     room_id: str,
     event_id: str,
@@ -313,11 +333,19 @@ def post_source(
 
 
 def profile_source(
-    room_id: str, *, avatar: dict[str, Any] | None = None, banner: dict[str, Any] | None = None
+    room_id: str,
+    *,
+    avatar: dict[str, Any] | None = None,
+    banner: dict[str, Any] | None = None,
+    pinned: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """``avatar``/``banner`` are ``{"mxc": <the Matrix image it was made
-    from>, "blob": <blob reference, JSON form>}``."""
-    source: dict[str, Any] = {"kind": "matrix_profile", "v": 1, "room_id": room_id}
+    from>, "blob": <blob reference, JSON form>}``. ``pinned`` is
+    ``{"event_id": <the pinned Matrix event>, "ref": <strong reference to
+    the post made from it>}``."""
+    source: dict[str, Any] = {"kind": "matrix_profile", "v": 2 if pinned else 1, "room_id": room_id}
+    if pinned is not None:
+        source["pinned"] = pinned
     if avatar is not None:
         source["avatar"] = avatar
     if banner is not None:
@@ -331,11 +359,13 @@ async def profile_record_from_room(
     room_id = source["room_id"]
     name = await synapse.get_room_state(room_id, "m.room.name", as_user_id=as_user_id)
     topic = await synapse.get_room_state(room_id, "m.room.topic", as_user_id=as_user_id)
-    return profile_record_v1(
-        (name or {}).get("name"),
-        (topic or {}).get("topic"),
-        avatar=lexjson.from_json(source["avatar"]["blob"]) if "avatar" in source else None,
-        banner=lexjson.from_json(source["banner"]["blob"]) if "banner" in source else None,
+    name_value, topic_value = (name or {}).get("name"), (topic or {}).get("topic")
+    avatar = lexjson.from_json(source["avatar"]["blob"]) if "avatar" in source else None
+    banner = lexjson.from_json(source["banner"]["blob"]) if "banner" in source else None
+    if source.get("v") == 1:
+        return profile_record_v1(name_value, topic_value, avatar=avatar, banner=banner)
+    return profile_record_v2(
+        name_value, topic_value, avatar=avatar, banner=banner, pinned_post=dict(source["pinned"]["ref"])
     )
 
 
@@ -385,7 +415,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         )
 
     async def rebuild_profile(source: dict[str, Any]) -> Any:
-        if source.get("v") != 1:
+        if source.get("v") not in (1, 2):
             raise ValueError(f"Unknown matrix_profile version {source.get('v')!r}")
         return await profile_record_from_room(synapse, source, as_user_id=bot_mxid)
 

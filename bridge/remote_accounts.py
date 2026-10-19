@@ -35,7 +35,7 @@ from bridge.msc4501 import (
     SOCIAL_PROFILE_USER_ID_STATE_TYPE,
     external_handle_value,
 )
-from bridge.post_mirroring import REPOST_COLLECTION, mirror_post, mirror_repost
+from bridge.post_mirroring import REPOST_COLLECTION, import_post, mirror_post, mirror_repost
 from bridge.repository import RemoteAccount
 from bridge.room_widget import add_bridge_widget
 from bridge.synapse_client import SynapseError
@@ -51,6 +51,7 @@ _CATCH_UP_WINDOW = 30
 _ROOM_NAME_STATE = "m.room.name"
 _ROOM_TOPIC_STATE = "m.room.topic"
 _ROOM_AVATAR_STATE = "m.room.avatar"
+_PINNED_EVENTS_STATE = "m.room.pinned_events"
 
 
 def _bot(app: FastAPI) -> str:
@@ -127,6 +128,47 @@ async def _apply_banner(app: FastAPI, identity: RemoteIdentity, ghost: str, room
             await synapse.send_state_event(room_id, PROFILE_BANNER_STATE_TYPE, {"url": mxc}, as_user_id=_bot(app))
     except SynapseError:
         logger.info("Could not set the banner of %s", room_id, exc_info=True)
+
+
+async def apply_pinned_post(app: FastAPI, remote: RemoteAccount, profile: dict) -> None:
+    """Mirror the profile's pinned post as the room's pin, as
+    matrix-appservice-activitypub does with a featured post. The post is
+    imported into the room first if it isn't there (like a reposted
+    original). Only the bridge's own pin -- any pinned event that is one
+    of this account's posts -- is replaced; pins someone here added to
+    anything else stay. Best-effort."""
+    pinned = profile.get("pinnedPost")
+    uri = pinned.get("uri") if isinstance(pinned, dict) else None
+    # Bluesky lets an account pin only its own posts; anything else is ignored.
+    if not isinstance(uri, str) or not uri.startswith(f"at://{remote.did}/{POST_COLLECTION}/"):
+        uri = None
+    synapse = app.state.synapse
+    repository = app.state.repository
+    try:
+        target = None
+        if uri is not None:
+            try:
+                found = await import_post(app, uri)
+            except Exception:  # network trouble fetching it: leave the pin as it was
+                logger.info("Could not import the pinned post %s", uri, exc_info=True)
+                return
+            if found is not None and found.room_id == remote.room_id:
+                target = found.event_id
+        state = await synapse.get_room_state(remote.room_id, _PINNED_EVENTS_STATE, as_user_id=remote.ghost_user_id)
+        current = [e for e in (state or {}).get("pinned") or [] if isinstance(e, str)]
+        own = f"at://{remote.did}/{POST_COLLECTION}/"
+        kept = []
+        for event_id in current:
+            mirrored = await repository.get_mirrored_post_for_event(event_id)
+            if event_id != target and (mirrored is None or not mirrored.uri.startswith(own)):
+                kept.append(event_id)
+        wanted = kept + ([target] if target else [])
+        if wanted != current:
+            await synapse.send_state_event(
+                remote.room_id, _PINNED_EVENTS_STATE, {"pinned": wanted}, as_user_id=remote.ghost_user_id
+            )
+    except SynapseError:
+        logger.info("Could not mirror the pinned post of %s", remote.did, exc_info=True)
 
 
 async def _mark_profile_room(app: FastAPI, ghost: str, room_id: str) -> None:
@@ -294,6 +336,8 @@ async def ensure_remote_account(app: FastAPI, identity: RemoteIdentity) -> tuple
     remote = RemoteAccount(identity.did, identity.handle, identity.pds, ghost, room_id)
     await repository.save_remote_account(remote)
     logger.info("Created Remote User Room %s for %s (%s)", room_id, identity.handle, identity.did)
+    # Only once the account is saved: importing the post looks it up.
+    await apply_pinned_post(app, remote, profile)
     return remote, True
 
 
@@ -303,6 +347,7 @@ async def refresh_remote_account(app: FastAPI, remote: RemoteAccount, identity: 
     await app.state.repository.save_remote_account(updated)
     label, _, avatar_mxc, profile = await _apply_profile(app, identity, updated.ghost_user_id, updated.room_id)
     await _apply_banner(app, identity, updated.ghost_user_id, updated.room_id, profile)
+    await apply_pinned_post(app, updated, profile)
     await send_bridge_info(app, room_id=updated.room_id, did=identity.did, display_name=label, avatar_mxc=avatar_mxc)
     return updated
 

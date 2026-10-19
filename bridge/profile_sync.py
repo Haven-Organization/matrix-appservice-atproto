@@ -8,6 +8,10 @@ Images are prepared once, when they change (see ``bridge.media``), and the
 resulting blob reference is kept in the profile record's source alongside
 the Matrix image it came from -- so an image is only reprocessed when the
 room's actually changes.
+
+The pinned post is the latest event pinned in the room (``m.room.pinned_events``)
+that is one of the account's own posts: Bluesky pins one post, Matrix any
+number. A reference to it is kept in the source the same way.
 """
 
 from __future__ import annotations
@@ -21,9 +25,16 @@ from fastapi import FastAPI
 from bridge.atproto import lexjson
 from bridge.atproto.cid import CID
 from bridge.bridge_info import send_bridge_info
-from bridge.matrix_records import PROFILE_COLLECTION, PROFILE_RKEY, profile_record_from_room, profile_source
+from bridge.matrix_records import (
+    POST_COLLECTION,
+    PROFILE_COLLECTION,
+    PROFILE_RKEY,
+    profile_record_from_room,
+    profile_source,
+)
 from bridge.media import prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
+from bridge.post_lookup import locate_post_by_event
 from bridge.repository import Account, BlobRow
 from bridge.synapse_client import SynapseError
 
@@ -63,6 +74,31 @@ async def prepare_profile_image(app: FastAPI, account: Account, mxc: str) -> dic
     return {"mxc": mxc, "blob": lexjson.to_json(blob)}
 
 
+PINNED_EVENTS_STATE_TYPE = "m.room.pinned_events"
+
+
+async def pinned_post(app: FastAPI, account: Account) -> dict[str, Any] | None:
+    """The ``pinned`` entry for the profile source: the most recently
+    pinned event in the Profile Room that is one of the account's own
+    posts (the first post, if it became a thread), or ``None``. Pins of
+    anything else -- notices, someone else's reply -- are passed over."""
+    room_id = account.profile_room_id
+    if not room_id:
+        return None
+    state = await app.state.synapse.get_room_state(room_id, PINNED_EVENTS_STATE_TYPE, as_user_id=_bot(app))
+    pinned = (state or {}).get("pinned")
+    if not isinstance(pinned, list):
+        return None
+    own = f"at://{account.did}/{POST_COLLECTION}/"
+    for event_id in reversed(pinned):
+        if not isinstance(event_id, str):
+            continue
+        found = await locate_post_by_event(app, room_id, event_id)
+        if found is not None and found.uri.startswith(own) and found.cid:
+            return {"event_id": event_id, "ref": found.strong_ref()}
+    return None
+
+
 async def sync_profile_record(app: FastAPI, account: Account) -> None:
     """Make the account's profile record match its Profile Room."""
     if not account.profile_room_id:
@@ -86,7 +122,12 @@ async def sync_profile_record(app: FastAPI, account: Account) -> None:
             entry = await prepare_profile_image(app, account, mxc)
         images[field] = entry
 
-    source = profile_source(account.profile_room_id, avatar=images["avatar"], banner=images["banner"])
+    source = profile_source(
+        account.profile_room_id,
+        avatar=images["avatar"],
+        banner=images["banner"],
+        pinned=await pinned_post(app, account),
+    )
     record = await profile_record_from_room(synapse, source, as_user_id=bot)
     await app.state.pds.put_record(account.did, PROFILE_COLLECTION, PROFILE_RKEY, record, source=source)
     # Keep the room's bridge info naming the account as it now appears.

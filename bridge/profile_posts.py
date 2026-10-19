@@ -13,6 +13,7 @@ at the Matrix event or room it came from (see ``bridge.matrix_records``).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from urllib.parse import quote
@@ -27,6 +28,8 @@ from bridge.matrix_records import (
     MAX_THREAD_POSTS,
     MEDIA_MSGTYPES,
     POST_COLLECTION,
+    PROFILE_COLLECTION,
+    PROFILE_RKEY,
     RECORD_EMBED_TYPE,
     RECORD_WITH_MEDIA_EMBED_TYPE,
     media_filename,
@@ -40,7 +43,7 @@ from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import PostRef, find_linked_post
-from bridge.profile_sync import sync_profile_record
+from bridge.profile_sync import PINNED_EVENTS_STATE_TYPE, sync_profile_record
 from bridge.repository import Account, BlobRow, PublishedMedia
 from bridge.synapse_client import SynapseError
 
@@ -299,15 +302,38 @@ async def maybe_handle_redaction(request: Request, event: dict) -> bool:
         logger.info("Deleting records of %s after redaction of %s: %s", did, redacted_id, exc.message)
     else:
         logger.info("Deleted %d record(s) of %s: Matrix event %s was redacted", len(rows), did, redacted_id)
+    await _unpin_if_pinned(request, did, redacted_id)
     return True
 
 
-_PROFILE_STATE_TYPES = ("m.room.name", "m.room.topic", "m.room.avatar", PROFILE_BANNER_STATE_TYPE)
+async def _unpin_if_pinned(request: Request, did: str, event_id: str) -> None:
+    """A redacted post stays in the room's pinned list (clients keep the
+    ID), so if it was the profile's pinned post, choose again."""
+    repository = request.app.state.repository
+    row = await repository.get_record(did, PROFILE_COLLECTION, PROFILE_RKEY)
+    if row is None or (json.loads(row.source).get("pinned") or {}).get("event_id") != event_id:
+        return
+    account = await repository.get_account(did)
+    if account is None:
+        return
+    try:
+        await sync_profile_record(request.app, account)
+    except (SynapseError, PdsError):
+        logger.warning("Could not update profile record for %s", did, exc_info=True)
+
+
+_PROFILE_STATE_TYPES = (
+    "m.room.name",
+    "m.room.topic",
+    "m.room.avatar",
+    PROFILE_BANNER_STATE_TYPE,
+    PINNED_EVENTS_STATE_TYPE,
+)
 
 
 async def maybe_handle_profile_room_state(request: Request, event: dict) -> bool:
-    """Returns True if this was a name, topic, avatar or banner change in
-    a Profile Room."""
+    """Returns True if this was a name, topic, avatar, banner or pinned
+    events change in a Profile Room."""
     if event.get("type") not in _PROFILE_STATE_TYPES or event.get("state_key") != "":
         return False
     account = await request.app.state.repository.get_account_for_profile_room(event.get("room_id", ""))

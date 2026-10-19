@@ -16,6 +16,7 @@ Most of the bridge needs no commands at all.
 - A **link to a Bluesky post** (`bsky.app/profile/.../post/...`) makes it a quote of that post, as pasting one into the Bluesky app does. If the link comes last it is dropped from the text, so a message that is only the link is a bare quote. The first link to a post that can be found is quoted; one that can't stays an ordinary link. A captioned image or video becomes a quote with that media.
 - **Redacting** a message deletes everything published from it.
 - Changing the room's **name, topic or avatar** changes your display name, bio and avatar.
+- **Pinning** one of your posts in the room pins it on your profile, as in matrix-appservice-activitypub. Bluesky pins one post, so it is the one pinned most recently; pins of anything that isn't one of your posts are passed over. A post made into a thread pins its first post. Unpinning it, or redacting it, falls back to the next pinned post, or to none.
 - Replies to your posts from Bluesky appear as a thread under the post, each from its author's ghost user, and you can answer in the thread.
 - Messages from anyone else in the room (unless they reply to a post, which publishes a reply from *their* account) and edits are not published.
 
@@ -39,6 +40,7 @@ Going the other way, a like or repost made on Bluesky of a post that is in Matri
 - A quote-post ends with "🔁 reposted *author*'s post" and a preview of the quoted post. If the quoted post has an image or video and the quote-post has no attachment of its own, the message is that image or video at preview size; if it has its own, the quoted one is shown inside the preview. Whether a quoted post that isn't in Matrix gets imported is set by `bridge.quote_import_policy`: `known` (default, only if its author already has a room here), `always`, or `never`; otherwise the line links to bsky.app.
 - Posts and reposts the live feed didn't deliver are picked up by a direct check of each followed account every `atproto.catchup_minutes` (default 5).
 - Deleting a post on Bluesky redacts it here.
+- The account's **pinned post** is pinned in the room by its ghost, imported first if it isn't in Matrix yet. Pinning another post or unpinning on Bluesky moves or removes that pin; anything someone here pinned in the room stays pinned.
 - Media larger than `atproto.max_media_mb` isn't copied into Matrix; it is linked under "Attachments:" in the post's message instead.
 
 ## Your rooms
