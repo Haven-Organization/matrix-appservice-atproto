@@ -5,9 +5,9 @@ of Matrix room events here whenever something happens in a room the bot is
 a member of, authenticating itself with the shared ``hs_token`` from the
 registration file.
 
-It authenticates, deduplicates by transaction ID (Synapse retries on
-timeout/error; persisted, so safe across a bridge restart), then for each
-event tries, in order: accepting an invite extended to the bot; a ghost
+It authenticates, skips events it has already handled (Synapse resends a
+transaction on timeout/error; remembered by event ID, persisted, so safe
+across a restart of either side), then for each event tries, in order: accepting an invite extended to the bot; a ghost
 being invited to a room to start a chat; a local user joining a room the
 bridge manages for them (which files it in their space) or leaving a
 Remote User Room (which unfollows); a redaction (of a chat message, or of
@@ -108,17 +108,46 @@ async def maybe_accept_invite(request: Request, event: dict) -> bool:
     return True
 
 
+async def _handle_event(request: Request, event: dict[str, Any]) -> None:
+    """Give ``event`` to the first handler that claims it."""
+    if await maybe_accept_invite(request, event):
+        return
+    if await maybe_start_chat_from_invite(request, event):
+        return
+    if await maybe_handle_knock(request, event):
+        return
+    if await maybe_handle_join(request, event):
+        return
+    if await maybe_handle_leave(request, event):
+        return
+    if await maybe_handle_chat_redaction(request, event):
+        return
+    if await maybe_handle_redaction(request, event):
+        return
+    if await maybe_handle_profile_room_state(request, event):
+        return
+    # Before commands and posting: a bare "confirm" is recognized
+    # by what it replies to, not by a prefix or a tag.
+    if await maybe_handle_confirmation(request, event):
+        return
+    if await maybe_handle_command(request, event):
+        return
+    if await maybe_send_chat_message(request, event):
+        return
+    if await maybe_send_chat_reaction(request, event):
+        return
+    if await maybe_handle_reaction(request, event):
+        return
+    if await maybe_publish_reply(request, event):
+        return
+    await maybe_publish_profile_post(request, event)
+
+
 async def _handle_transaction(
     request: Request, txn_id: str, authorization: str | None, access_token: str | None
 ) -> Response:
     _check_hs_token(request, authorization, access_token)
     repository = request.app.state.repository
-
-    # Synapse retries a transaction it didn't get a 200 for; per spec a
-    # repeat of the same txnId is already handled, not to be reprocessed.
-    if await repository.has_processed_transaction(txn_id):
-        logger.debug("Ignoring already-processed transaction %s", txn_id)
-        return Response(**_EMPTY_JSON_RESPONSE_KWARGS)
 
     try:
         body: dict[str, Any] = await request.json()
@@ -126,44 +155,23 @@ async def _handle_transaction(
         raise HTTPException(status_code=400, detail=f"Malformed transaction body: {exc}") from exc
 
     for event in body.get("events", []):
+        # Deduplicated by event, not by txnId: Synapse on SQLite numbers its
+        # transactions from 1 again after a restart, so a repeated txnId can
+        # carry new events. A resent transaction also gets the events that
+        # weren't handled before the bridge stopped.
+        event_id = event.get("event_id")
+        if event_id and await repository.has_processed_event(event_id):
+            logger.debug("Ignoring already-processed event %s in transaction %s", event_id, txn_id)
+            continue
         try:
-            if await maybe_accept_invite(request, event):
-                continue
-            if await maybe_start_chat_from_invite(request, event):
-                continue
-            if await maybe_handle_knock(request, event):
-                continue
-            if await maybe_handle_join(request, event):
-                continue
-            if await maybe_handle_leave(request, event):
-                continue
-            if await maybe_handle_chat_redaction(request, event):
-                continue
-            if await maybe_handle_redaction(request, event):
-                continue
-            if await maybe_handle_profile_room_state(request, event):
-                continue
-            # Before commands and posting: a bare "confirm" is recognized
-            # by what it replies to, not by a prefix or a tag.
-            if await maybe_handle_confirmation(request, event):
-                continue
-            if await maybe_handle_command(request, event):
-                continue
-            if await maybe_send_chat_message(request, event):
-                continue
-            if await maybe_send_chat_reaction(request, event):
-                continue
-            if await maybe_handle_reaction(request, event):
-                continue
-            if await maybe_publish_reply(request, event):
-                continue
-            await maybe_publish_profile_post(request, event)
+            await _handle_event(request, event)
         except Exception:
             logger.exception(
-                "Error handling event %s (%s) in %s", event.get("event_id"), event.get("type"), event.get("room_id")
+                "Error handling event %s (%s) in %s", event_id, event.get("type"), event.get("room_id")
             )
+        if event_id:
+            await repository.mark_event_processed(event_id)
 
-    await repository.mark_transaction_processed(txn_id)
     return Response(**_EMPTY_JSON_RESPONSE_KWARGS)
 
 

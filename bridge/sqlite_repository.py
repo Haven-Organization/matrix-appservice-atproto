@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -170,8 +171,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     event_id TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS processed_transactions (
-    txn_id TEXT PRIMARY KEY
+-- Matrix events already handled, so one Synapse sends again isn't handled
+-- twice. Kept by event ID, not transaction ID: Synapse on SQLite numbers
+-- its transactions from 1 again after a restart. Forgotten after a week.
+CREATE TABLE IF NOT EXISTS processed_events (
+    event_id TEXT PRIMARY KEY,
+    processed_at INTEGER NOT NULL
 );
 """
 
@@ -190,6 +195,7 @@ _ADDED_COLUMNS = (
 _INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_profile_room ON accounts (profile_room_id);
 CREATE INDEX IF NOT EXISTS records_matrix_event ON records (matrix_event_id);
+CREATE INDEX IF NOT EXISTS processed_events_at ON processed_events (processed_at);
 """
 
 # Run on every startup, after the schema is in place.
@@ -198,7 +204,13 @@ _STARTUP_FIXUPS = (
     # from the post they belong to.
     "UPDATE mirrored_events SET cid = COALESCE((SELECT cid FROM mirrored_posts WHERE uri = mirrored_events.uri), '') "
     "WHERE cid = ''",
+    # Replaced by processed_events.
+    "DROP TABLE IF EXISTS processed_transactions",
 )
+
+# How long a handled Matrix event is remembered. Synapse gives up retrying
+# a transaction well before this.
+_PROCESSED_EVENT_RETENTION_SECONDS = 7 * 24 * 3600
 
 _CLAIM_COLUMNS = "label, matrix_user_id, did, claimed_at"
 _ACCOUNT_COLUMNS = (
@@ -777,16 +789,22 @@ class SqliteBridgeRepository:
 
     # -- Matrix AppService --------------------------------------------------
 
-    async def has_processed_transaction(self, txn_id: str) -> bool:
+    async def has_processed_event(self, event_id: str) -> bool:
         def query(conn: sqlite3.Connection) -> bool:
-            return conn.execute("SELECT 1 FROM processed_transactions WHERE txn_id = ?", (txn_id,)).fetchone() is not None
+            return conn.execute("SELECT 1 FROM processed_events WHERE event_id = ?", (event_id,)).fetchone() is not None
 
         return await self._run(query)
 
-    async def mark_transaction_processed(self, txn_id: str) -> None:
-        await self._run(
-            lambda conn: conn.execute("INSERT INTO processed_transactions (txn_id) VALUES (?) ON CONFLICT DO NOTHING", (txn_id,))
-        )
+    async def mark_event_processed(self, event_id: str) -> None:
+        now = int(time.time())
+
+        def write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO processed_events (event_id, processed_at) VALUES (?, ?) ON CONFLICT DO NOTHING", (event_id, now)
+            )
+            conn.execute("DELETE FROM processed_events WHERE processed_at < ?", (now - _PROCESSED_EVENT_RETENTION_SECONDS,))
+
+        await self._run(write)
 
     async def close(self) -> None:
         async with self._lock:

@@ -350,11 +350,13 @@ class BridgeRepository(Protocol):
         ...
 
     # -- Matrix AppService --------------------------------------------------
-    async def has_processed_transaction(self, txn_id: str) -> bool:
-        """Synapse retries a transaction it got no 200 for; a repeat must
-        not be handled twice."""
+    async def has_processed_event(self, event_id: str) -> bool:
+        """Synapse sends a transaction again when it got no 200 for it; an
+        event already handled must not be handled twice."""
         ...
 
-    async def mark_transaction_processed(self, txn_id: str) -> None: ...
+    async def mark_event_processed(self, event_id: str) -> None:
+        """Also forgets events handled more than a week ago."""
+        ...
 
     async def close(self) -> None: ...
