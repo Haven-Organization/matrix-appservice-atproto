@@ -5,7 +5,7 @@ network leaves a repost card in their Profile Room (MSC4501): a message
 from its bot on the owner's behalf (``com.beeper.per_message_profile``
 naming the owner), with an ``org.matrix.msc4501.social.relates_to`` repost
 relation, the reposted post's text in ``org.matrix.msc4501.social.body``,
-a preview image or video, and the original's web address in
+a preview image or video, and -- ideally -- the original's web address in
 ``external_url``.
 
 Such a card, from one of ``appservice.other_bot_users`` (or the owner),
@@ -17,7 +17,10 @@ becomes:
   X's post" with a link card titled with X, described with the post's
   text and showing the preview image (``repost_card_record_v1``).
 
-A card without ``external_url`` can't be linked to, so it is left alone.
+A card without ``external_url`` takes it from the reposted event itself,
+which the bridges mirror with one, if the bot can read it (a world-readable
+Remote User Room); otherwise there is nothing to link to and the card is
+left alone.
 Redacting the card (the other bridge does, when the repost is undone)
 removes what was made from it, like any other published event.
 """
@@ -36,7 +39,7 @@ from bridge.interactions import has_record_of
 from bridge.matrix_records import (
     POST_COLLECTION,
     media_filename,
-    repost_card_link,
+    external_url,
     repost_card_record_v1,
     repost_card_source,
     repost_relation,
@@ -82,6 +85,20 @@ async def _thumb(request: Request, account: Account, event: dict) -> dict[str, A
     return {"$type": "blob", "ref": cid, "mimeType": image.mime_type, "size": len(image.data)}
 
 
+async def _original_link(request: Request, relation: dict[str, Any]) -> str | None:
+    """The reposted event's own ``external_url``, if the bot can read it."""
+    room_id, event_id = relation.get("room_id"), relation.get("event_id")
+    if not isinstance(room_id, str) or not isinstance(event_id, str) or not room_id or not event_id:
+        return None
+    try:
+        original = await request.app.state.synapse.get_event(
+            room_id, event_id, as_user_id=bot_mxid(request.app.state.config)
+        )
+    except SynapseError:
+        return None
+    return external_url(original) if original else None
+
+
 async def _repost(request: Request, account: Account, subject: dict[str, str], event_id: str) -> None:
     if await has_record_of(request, account, REPOST_COLLECTION, subject["uri"]):
         return
@@ -123,7 +140,10 @@ async def maybe_publish_repost_card(request: Request, event: dict) -> bool:
         if target is not None:
             await _repost(request, account, target.strong_ref(), event_id)
             return True
-        link = repost_card_link(event)
+        link = external_url(event)
+        kept_link = None
+        if link is None:
+            kept_link = link = await _original_link(request, relation)
         if link is None:
             logger.info("Repost card %s has no external_url to link to; not published", event_id)
             return True
@@ -132,7 +152,7 @@ async def maybe_publish_repost_card(request: Request, event: dict) -> bool:
             await _repost(request, account, linked[1], event_id)
             return True
         thumb = await _thumb(request, account, event)
-        record = repost_card_record_v1(event, thumb=thumb)
+        record = repost_card_record_v1(event, thumb=thumb, link=kept_link)
         if record is None:
             return True
         pds = app.state.pds
@@ -144,7 +164,7 @@ async def maybe_publish_repost_card(request: Request, event: dict) -> bool:
                     POST_COLLECTION,
                     pds.next_record_key(),
                     record,
-                    source=repost_card_source(room_id, event_id, thumb=thumb),
+                    source=repost_card_source(room_id, event_id, thumb=thumb, link=kept_link),
                     matrix_event_id=event_id,
                 )
             ],

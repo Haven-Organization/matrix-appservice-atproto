@@ -24,7 +24,9 @@ records are v1 or v3; v2 is only read.
 
 Repost cards (``matrix_repost_card``): v1 is the original. A post linking
 to something reposted through another bridge sharing the Profile Room
-(``repost_card_record_v1``); ``thumb`` is the only thing kept.
+(``repost_card_record_v1``). Kept: ``thumb``, and ``link`` -- the
+original's address, only when the card itself doesn't carry it (read once
+from the reposted event, which may not stay readable).
 
 Profiles: v1 is the original. v2 adds ``pinned``, the post pinned in the
 Profile Room (``{"event_id", "ref"}``, ``ref`` a strong reference to it);
@@ -292,28 +294,31 @@ def repost_relation(content: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def repost_card_link(event: dict[str, Any]) -> str | None:
-    """Where the reposted post is on the web: the card's ``external_url``,
-    as the bridges set it on what they mirror. ``None`` if it has none."""
+def external_url(event: dict[str, Any]) -> str | None:
+    """An event's ``external_url`` -- where what it shows is on the web, as
+    the bridges set it on what they mirror -- if it is a usable link."""
     url = (event.get("content") or {}).get("external_url")
     if isinstance(url, str) and len(url) <= _MAX_LINK_LENGTH and re.fullmatch(r"https?://[^\s<>\"']+", url):
         return url
     return None
 
 
-def repost_card_record_v1(event: dict[str, Any], *, thumb: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def repost_card_record_v1(
+    event: dict[str, Any], *, thumb: dict[str, Any] | None = None, link: str | None = None
+) -> dict[str, Any] | None:
     """The post standing for a repost made through another bridge -- of a
     fediverse or Nostr post, say, which Bluesky can't repost natively:
     "🔁 Reposted X's post" with a link card to the original, titled with
     its author and described with its text. ``thumb`` (a blob of the
     card's preview image) is fixed when the post is first made, so the
-    caller supplies it. ``None`` if the event can't produce it (redacted,
-    not a repost card, no link to the original)."""
+    caller supplies it, as it does ``link`` when the card has no
+    ``external_url`` of its own. ``None`` if the event can't produce it
+    (redacted, not a repost card, no link to the original)."""
     if is_redacted(event):
         return None
     content = event.get("content") or {}
     relation = repost_relation(content)
-    link = repost_card_link(event)
+    link = external_url(event) or link
     if relation is None or link is None:
         return None
     name = relation.get("displayname")
@@ -334,8 +339,12 @@ def repost_card_record_v1(event: dict[str, Any], *, thumb: dict[str, Any] | None
     }
 
 
-def repost_card_source(room_id: str, event_id: str, *, thumb: dict[str, Any] | None = None) -> dict[str, Any]:
+def repost_card_source(
+    room_id: str, event_id: str, *, thumb: dict[str, Any] | None = None, link: str | None = None
+) -> dict[str, Any]:
     source: dict[str, Any] = {"kind": "matrix_repost_card", "v": 1, "room_id": room_id, "event_id": event_id}
+    if link is not None:
+        source["link"] = link
     if thumb is not None:
         source["thumb"] = lexjson.to_json(thumb)
     return source
@@ -501,7 +510,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         if event is None:
             return None
         thumb = lexjson.from_json(source["thumb"]) if "thumb" in source else None
-        return repost_card_record_v1(event, thumb=thumb)
+        return repost_card_record_v1(event, thumb=thumb, link=source.get("link"))
 
     async def rebuild_profile(source: dict[str, Any]) -> Any:
         if source.get("v") not in (1, 2):
