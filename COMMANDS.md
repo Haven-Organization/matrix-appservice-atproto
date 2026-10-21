@@ -306,7 +306,7 @@ The commands below directly manipulate the binding between a Matrix room and a B
 - A Remote User Room: a server admin only.
 - A Chat room or notifications room: its owner, or a server admin.
 
-**Notes:** Nobody is removed from the retired room. Refuses outright if the room turns out to be registered as more than one kind of room at once; that means something is already wrong and this isn't the way to fix it.
+**Notes:** Nobody is removed from the retired room. Refuses outright if the room turns out to be registered as more than one kind of room at once; that means something is already wrong and this isn't the way to fix it. Also refuses for a Profile Room shared with other bridges (it carries another bridge's `m.bridge` state, or one of `appservice.other_bot_users` / `other_bridge_users` is in it): they would be left behind in the old room.
 
 ---
 
@@ -332,7 +332,7 @@ The commands below directly manipulate the binding between a Matrix room and a B
 
 **Who can run it:** Any local user with an identity. It always acts on whoever confirms, never on someone else.
 
-**Notes:** Irreversible, and the only command here that is. The Profile Room itself is left for you to leave when you like. Running `]create profile` afterwards gives you a brand new account with a different DID; nothing carries over.
+**Notes:** Irreversible, and the only command here that is. The Profile Room itself is left for you to leave when you like. A Profile Room shared with other bridges is not renamed, since its name is still your display name on their networks. Running `]create profile` afterwards gives you a brand new account with a different DID; nothing carries over.
 
 ---
 

@@ -72,6 +72,25 @@ appservice:
   # answers to -- matrix-appservice-activitypub uses ";".
   command_prefix: "]"
 
+  # Other bots and bridges sharing rooms with this one -- for example the
+  # ActivityPub and Nostr bridges in one shared Profile Room, so a single
+  # room is your Matrix, Bluesky, fediverse and Nostr profile at once. See
+  # "Sharing a Profile Room with other bridges" in FEATURES.md.
+  #
+  # Their command prefixes: a message whose first line is one of these
+  # immediately followed by a word (";follow ...", "[help") is never
+  # published. "; not a command" or "[Update] ..." still are.
+  # other_command_prefixes: [";", "["]
+  #
+  # Their bot accounts: a message tagging one is never published.
+  # other_bot_users: ["@fediverse:example.org", "@nostr:example.org"]
+  #
+  # The users other bridges puppet, as regular expressions matched against
+  # the whole user ID. They are local users, so without this a fediverse
+  # like or reply mirrored into your Profile Room would get a "you need a
+  # Bluesky identity" reply, and one could even run commands.
+  # other_bridge_users: ["@fedi_.*:example\\.org", "@nostr_.*:example\\.org"]
+
 storage:
   # "sqlite" (default): a single file, bridge.db, under data_dir. No setup.
   # "postgresql": a Postgres server instead, e.g. the one your homeserver

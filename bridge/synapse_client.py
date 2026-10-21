@@ -289,6 +289,10 @@ class SynapseClient:
                 return None
             raise
 
+    async def get_full_state(self, room_id: str, *, as_user_id: str) -> list[dict[str, Any]]:
+        """Every current state event of a room."""
+        return await self._request("GET", f"/_matrix/client/v3/rooms/{room_id}/state", as_user_id=as_user_id) or []
+
     async def get_event(self, room_id: str, event_id: str, *, as_user_id: str) -> dict[str, Any] | None:
         """A single event, or ``None`` if it doesn't exist (or isn't
         visible). Any other failure raises -- callers rebuilding records

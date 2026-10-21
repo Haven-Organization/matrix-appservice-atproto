@@ -51,6 +51,9 @@ These are documented inline in `config.example.yaml` and only summarised here.
 | `appservice.bot_display_name` / `bot_avatar_mxc` | unset (not managed) | The bot's profile, applied at startup. |
 | `appservice.user_prefix` | `at_` | Username prefix of ghost users. Changing it later orphans existing ghosts and needs the registration regenerated. |
 | `appservice.command_prefix` | `]` | What a command starts with when the bot isn't tagged. |
+| `appservice.other_command_prefixes` | `[]` | Other bots' command prefixes. A message whose first line is one of them followed directly by a word and a space (or nothing) is never published. Must not include `command_prefix`. See [Sharing a Profile Room with other bridges](FEATURES.md#sharing-a-profile-room-with-other-bridges). |
+| `appservice.other_bot_users` | `[]` | Other bots' user IDs. A message tagging one is never published, and their messages are never acted on. |
+| `appservice.other_bridge_users` | `[]` | Regular expressions for other bridges' ghost users, matched against the whole user ID. Their messages and reactions are never acted on or answered. |
 | `storage.backend` | `sqlite` | `sqlite` or `postgresql`. See [`storage`](#storage). |
 | `storage.data_dir` | `./data` | Where `bridge.db` is kept (SQLite). |
 | `handles.reserved` | `[]` | Subdomains nobody may claim as a handle. |

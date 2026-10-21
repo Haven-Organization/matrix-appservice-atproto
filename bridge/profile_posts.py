@@ -22,7 +22,7 @@ from fastapi import Request
 
 from bridge.atproto import cbor
 from bridge.atproto.cid import CID
-from bridge.commands import bot_mxid, message_addresses_bot, notice
+from bridge.commands import bot_mxid, message_addresses_bot, message_for_other_bot, notice
 from bridge.matrix_records import (
     EXTERNAL_EMBED_TYPE,
     MAX_THREAD_POSTS,
@@ -254,6 +254,8 @@ async def maybe_publish_profile_post(request: Request, event: dict) -> bool:
     content = event.get("content") or {}
     if message_addresses_bot(content, request.app.state.config):
         return True
+    if message_for_other_bot(content, request.app.state.config):
+        return True  # a command for another bot sharing the room
     if "m.relates_to" in content or "m.new_content" in content:
         # An edit must not post its "* new text" fallback as a new post.
         # (A reply to a post is handled before this, in

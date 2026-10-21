@@ -35,7 +35,7 @@ from bridge.chat import (
     maybe_send_chat_reaction,
     maybe_start_chat_from_invite,
 )
-from bridge.commands import bot_mxid, is_bridge_user, maybe_handle_command, notice
+from bridge.commands import bot_mxid, is_bot_user, maybe_handle_command, notice
 from bridge.danger import maybe_handle_confirmation
 from bridge.interactions import maybe_handle_reaction, maybe_publish_reply
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave
@@ -86,7 +86,7 @@ async def maybe_accept_invite(request: Request, event: dict) -> bool:
         return True
 
     # A real local person, not a ghost inviting the bot into a chat room.
-    is_local = inviter.split(":", 1)[-1] == config.synapse.server_name and not is_bridge_user(config, inviter)
+    is_local = inviter.split(":", 1)[-1] == config.synapse.server_name and not is_bot_user(config, inviter)
     try:
         encrypted = await synapse.get_room_state(room_id, "m.room.encryption", as_user_id=bot) is not None
     except SynapseError:

@@ -82,9 +82,17 @@ def bot_mxid(config: Any) -> str:
 
 
 def is_bridge_user(config: Any, user_id: str) -> bool:
-    """Whether ``user_id`` is the bot or one of the bridge's ghosts -- whose
-    own messages must never be acted on."""
+    """Whether ``user_id`` is this bridge's bot or one of its ghosts."""
     return user_id == bot_mxid(config) or user_id.startswith(f"@{config.appservice.user_prefix}")
+
+
+def is_bot_user(config: Any, user_id: str) -> bool:
+    """Whether ``user_id`` is a bot or ghost -- this bridge's, or another
+    bot's or bridge's listed in the config -- whose messages must never be
+    acted on. Other bridges' ghosts are local users, so without this a
+    fediverse reply mirrored into a shared Profile Room would be answered
+    like a local user's, or could even run commands."""
+    return is_bridge_user(config, user_id) or config.appservice.is_other_bot(user_id)
 
 
 def _prefixed_command_re(prefix: str) -> re.Pattern[str]:
@@ -130,6 +138,21 @@ def _tags_bot(content: dict, config: Any) -> bool:
     return mxid in mentioned or mxid in _first_line(content)
 
 
+def message_for_other_bot(content: dict, config: Any) -> bool:
+    """Whether a message is a command for another bot sharing the room:
+    its first line is one of their prefixes immediately followed by a word
+    and then a space or the end of the line ("]follow x", ";help" -- but not
+    "[Update] text" or "; not a command"), or it tags one of them. Such a
+    message is never published. Same rule as the ActivityPub and Nostr
+    bridges."""
+    line = _first_line(content)
+    prefixes = config.appservice.other_command_prefixes
+    if prefixes and re.match(rf"(?:{'|'.join(map(re.escape, prefixes))})[A-Za-z][\w-]*(?:\s|$)", line):
+        return True
+    mentioned = (content.get("m.mentions") or {}).get("user_ids") or []
+    return any(bot in mentioned or bot in line for bot in config.appservice.other_bot_users)
+
+
 def message_addresses_bot(content: dict, config: Any) -> bool:
     """Whether a message is directed at the bot. Used to recognize
     commands, and independently by ``bridge.profile_posts`` so that such a
@@ -171,7 +194,7 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
     room_id = event.get("room_id", "")
     if not sender or not room_id or not message_addresses_bot(content, config):
         return False
-    if is_bridge_user(config, sender):
+    if is_bot_user(config, sender):
         return True
 
     prefix = config.appservice.command_prefix

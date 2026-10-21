@@ -31,7 +31,8 @@ from fastapi import Request
 from bridge.admins import is_admin
 from bridge.atproto.identity import IdentityError, RemoteIdentity, resolve_account, resolve_did
 from bridge.chat import ensure_chat_room, ensure_declaration
-from bridge.commands import _first_line, bot_mxid, notice, reply_target_event_id
+from bridge.bridge_info import PROTOCOL_ID
+from bridge.commands import _first_line, bot_mxid, is_bot_user, notice, reply_target_event_id
 from bridge.follows import invite_to_room
 from bridge.handle_provisioning import HandleRejected
 from bridge.onboarding import ensure_user_rooms
@@ -180,17 +181,39 @@ async def _retire_room(request: Request, *, old_room_id: str, new_room_id: str, 
 
 
 async def _local_members(request: Request, room_id: str) -> list[str]:
-    """The real (non-bridge) local users in a room."""
+    """The real local users in a room: not this bridge's bot or ghosts,
+    nor another bot's or bridge's."""
     config = request.app.state.config
     try:
         members = await request.app.state.synapse.get_joined_members(room_id, as_user_id=bot_mxid(config))
     except SynapseError:
         return []
-    prefix = f"@{config.appservice.user_prefix}"
-    return [
-        m for m in members
-        if m != bot_mxid(config) and not m.startswith(prefix) and m.endswith(f":{config.synapse.server_name}")
-    ]
+    return [m for m in members if not is_bot_user(config, m) and m.endswith(f":{config.synapse.server_name}")]
+
+
+async def _shared_with_other_bridges(request: Request, room_id: str) -> bool:
+    """Whether another bridge uses this room too -- a Profile Room shared
+    with, say, the ActivityPub or Nostr bridge: it carries another bridge's
+    ``m.bridge`` state, or one of ``appservice.other_bot_users`` /
+    ``other_bridge_users`` is joined. Assumes not if the room can't be read."""
+    config = request.app.state.config
+    bot = bot_mxid(config)
+    try:
+        state = await request.app.state.synapse.get_full_state(room_id, as_user_id=bot)
+    except SynapseError:
+        return False
+    for event in state:
+        if not isinstance(event, dict) or not event.get("content"):
+            continue  # an emptied m.bridge: that bridge has unlinked
+        if event.get("type") == "m.bridge" and not str(event.get("state_key", "")).startswith(f"{PROTOCOL_ID}://"):
+            return True
+        if (
+            event.get("type") == "m.room.member"
+            and event["content"].get("membership") == "join"
+            and config.appservice.is_other_bot(str(event.get("state_key", "")))
+        ):
+            return True
+    return False
 
 
 # -- unlink profile -----------------------------------------------------------
@@ -346,6 +369,14 @@ async def _classify_for_replace(request: Request, *, room_id: str, sender: str, 
     if not await _replace_permission(request, kind=kinds[0], room_id=room_id, sender=sender):
         who = "a server admin" if kinds[0] == "remote" else "its owner or a server admin"
         await notice(request, reply_room_id, f"Only {who} can replace this room.")
+        return None
+    if kinds[0] == "profile" and await _shared_with_other_bridges(request, room_id):
+        # The other bridges would stay bound to the tombstoned room.
+        await notice(
+            request,
+            reply_room_id,
+            "Other bridges use this room too, so I won't replace it: they would be left behind in the old room.",
+        )
         return None
     return kinds[0]
 
@@ -522,6 +553,13 @@ async def handle_delete_profile(request: Request, *, sender: str, room_id: str) 
         await notice(request, room_id, "You don't have a Bluesky identity to delete.")
         return
     handle = request.app.state.pds.handle_of(account)
+    if account.profile_room_id and await _shared_with_other_bridges(request, account.profile_room_id):
+        profile_room_step = "Unlink your Profile Room. Other bridges use it too, so it is left as it is for them."
+    else:
+        profile_room_step = (
+            'Unlink your Profile Room and rename it to end in " (Deleted)". The room itself is left for you to leave '
+            "when you like."
+        )
     await _warn(
         request,
         room_id,
@@ -534,7 +572,7 @@ async def handle_delete_profile(request: Request, *, sender: str, room_id: str) 
             "Retire the account's DID permanently, so it can never be used or recovered.",
             "Remove you from every other Bluesky room the bridge put you in (accounts you follow, chats, notifications).",
             "Remove you from your space.",
-            'Unlink your Profile Room and rename it to end in " (Deleted)". The room itself is left for you to leave when you like.',
+            profile_room_step,
             "Erase the identity here: its signing key, follows, and all record of its posts.",
             f"Free the handle {handle}: creating a profile again later gives you a brand new, different account.",
         ],
@@ -570,7 +608,9 @@ async def _execute_delete_profile(request: Request, *, sender: str, room_id: str
             await synapse.kick_user(other, sender, as_user_id=bot, reason="Bluesky identity deleted")
         except SynapseError:
             pass  # not in it, or (a chat room) the bot lacks the power to
-    if profile_room_id:
+    # A room shared with other bridges keeps its name: it is still their
+    # user's display name on those networks.
+    if profile_room_id and not await _shared_with_other_bridges(request, profile_room_id):
         try:
             name = ((await synapse.get_room_state(profile_room_id, "m.room.name", as_user_id=bot)) or {}).get("name")
             if name and not name.endswith(_DELETED_SUFFIX):

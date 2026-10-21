@@ -7,6 +7,7 @@ validated dataclasses so the rest of the codebase never touches raw dicts.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -157,6 +158,23 @@ class AppserviceSection:
     # profile". Must differ from every other bot sharing rooms with this
     # one (matrix-appservice-activitypub uses ";").
     command_prefix: str = "]"
+    # Other bots and bridges sharing rooms with this one -- e.g. the
+    # ActivityPub and Nostr bridges in one shared Profile Room.
+    # What their commands start with: a message whose first line is one of
+    # these immediately followed by a word ("]follow", ";help") is never
+    # published. Same setting and rule as the ActivityPub and Nostr bridges.
+    other_command_prefixes: tuple[str, ...] = ()
+    # Their bot accounts, as exact MXIDs: a message tagging one is a command
+    # for it, so never published; and their messages are never acted on.
+    other_bot_users: tuple[str, ...] = ()
+    # The users other bridges puppet (their ghosts), as regular expressions
+    # matched against the whole MXID: their messages and reactions are
+    # never acted on (no "you need a Bluesky identity" replies, no commands).
+    other_bridge_users: tuple[str, ...] = ()
+
+    def is_other_bot(self, user_id: str) -> bool:
+        """Whether ``user_id`` belongs to another bot or bridge."""
+        return user_id in self.other_bot_users or any(re.fullmatch(pattern, user_id) for pattern in self.other_bridge_users)
 
 
 @dataclass(frozen=True)
@@ -283,6 +301,13 @@ def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
     return section[key]
 
 
+def _string_list(section: dict[str, Any], key: str, section_name: str) -> list[str]:
+    value = section.get(key) or []
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise ConfigError(f"{section_name}.{key} must be a list of non-empty strings")
+    return [item.strip() for item in value]
+
+
 def _label_list(section: dict[str, Any], key: str) -> list[str]:
     value = section.get(key) or []
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -383,6 +408,19 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
     command_prefix = str(appservice_raw.get("command_prefix", "]")).strip()
     if not command_prefix:
         raise ConfigError("appservice.command_prefix must not be empty")
+    other_command_prefixes = _string_list(appservice_raw, "other_command_prefixes", "appservice")
+    if command_prefix in other_command_prefixes:
+        raise ConfigError("appservice.other_command_prefixes must not include this bridge's own command_prefix")
+    other_bot_users = _string_list(appservice_raw, "other_bot_users", "appservice")
+    for mxid in other_bot_users:
+        if not re.fullmatch(r"@[^:\s]+:\S+", mxid):
+            raise ConfigError(f"appservice.other_bot_users: {mxid!r} is not a Matrix user ID like @bot:example.org")
+    other_bridge_users = _string_list(appservice_raw, "other_bridge_users", "appservice")
+    for pattern in other_bridge_users:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ConfigError(f"appservice.other_bridge_users: {pattern!r} is not a valid regular expression: {exc}") from exc
     appservice_section = AppserviceSection(
         registration_path=_require(appservice_raw, "registration_path", "appservice"),
         id=_require(appservice_raw, "id", "appservice"),
@@ -393,6 +431,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
         bot_display_name=appservice_raw.get("bot_display_name"),
         bot_avatar_mxc=appservice_raw.get("bot_avatar_mxc"),
         command_prefix=command_prefix,
+        other_command_prefixes=tuple(other_command_prefixes),
+        other_bot_users=tuple(other_bot_users),
+        other_bridge_users=tuple(other_bridge_users),
     )
 
     storage_raw = raw.get("storage", {}) or {}

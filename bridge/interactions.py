@@ -29,7 +29,7 @@ from typing import Any
 
 from fastapi import Request
 
-from bridge.commands import bot_mxid, is_bridge_user, message_addresses_bot, notice
+from bridge.commands import bot_mxid, is_bot_user, message_addresses_bot, message_for_other_bot, notice
 from bridge.follows import now_timestamp
 from bridge.matrix_records import post_text
 from bridge.msc4501 import (
@@ -214,7 +214,7 @@ async def maybe_handle_reaction(request: Request, event: dict) -> bool:
     sender = event.get("sender", "")
     room_id = event.get("room_id", "")
     event_id = event.get("event_id", "")
-    if not sender or not event_id or is_bridge_user(config, sender):
+    if not sender or not event_id or is_bot_user(config, sender):
         return False
     target = await locate_post_by_event(app, room_id, str(relates_to.get("event_id") or ""))
     if target is None:
@@ -268,10 +268,12 @@ async def maybe_publish_reply(request: Request, event: dict) -> bool:
     room_id = event.get("room_id", "")
     event_id = event.get("event_id", "")
     target_event = _reply_target(content)
-    if not target_event or not sender or not event_id or is_bridge_user(config, sender):
+    if not target_event or not sender or not event_id or is_bot_user(config, sender):
         return False
     if "m.new_content" in content or message_addresses_bot(content, config):
         return False
+    if message_for_other_bot(content, config):
+        return True  # e.g. another bridge's command given as a reply to a post
     target = await locate_post_by_event(app, room_id, target_event, last_part=True)
     if target is None:
         return False

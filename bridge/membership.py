@@ -13,7 +13,7 @@ import logging
 
 from fastapi import Request
 
-from bridge.commands import bot_mxid, is_bridge_user
+from bridge.commands import bot_mxid, is_bot_user
 from bridge.follows import unfollow
 from bridge.notifications import NOTIFIED_EVENTS
 from bridge.spaces import (
@@ -104,7 +104,7 @@ async def maybe_handle_knock(request: Request, event: dict) -> bool:
     room_id = event.get("room_id", "")
     knocker = event.get("state_key", "")
     config = request.app.state.config
-    if not room_id or not knocker or is_bridge_user(config, knocker):
+    if not room_id or not knocker or is_bot_user(config, knocker):
         return False
     if knocker.split(":", 1)[-1] != config.synapse.server_name and not config.bridge.accept_federated_knocks:
         return False
@@ -137,7 +137,7 @@ async def maybe_handle_join(request: Request, event: dict) -> bool:
     room_id = event.get("room_id", "")
     user = event.get("state_key", "")
     config = request.app.state.config
-    if not room_id or not user or is_bridge_user(config, user):
+    if not room_id or not user or is_bot_user(config, user):
         return False
     if user.split(":", 1)[-1] != config.synapse.server_name:
         return False
@@ -169,7 +169,7 @@ async def maybe_handle_leave(request: Request, event: dict) -> bool:
         return False
     user = event.get("state_key", "")
     config = request.app.state.config
-    if not user or is_bridge_user(config, user):
+    if not user or is_bot_user(config, user):
         return False
     app = request.app
     repository = app.state.repository
