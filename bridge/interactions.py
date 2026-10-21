@@ -67,7 +67,7 @@ def _bare_emoji(key: str) -> str:
     return stripped
 
 
-async def _has_record_of(request: Request, account: Account, collection: str, subject_uri: str) -> bool:
+async def has_record_of(request: Request, account: Account, collection: str, subject_uri: str) -> bool:
     """Whether ``account`` already has a like/repost of ``subject_uri``.
     Both are stored inline, so their subject can be read back."""
     for row in await request.app.state.repository.list_records(account.did):
@@ -175,7 +175,7 @@ async def send_repost(request: Request, account: Account, target: PostRef, *, so
     event that asked for it (a 🔁 reaction, or a ``repost`` command).
     Returns False if they had already reposted it."""
     pds = request.app.state.pds
-    if await _has_record_of(request, account, REPOST_COLLECTION, target.uri):
+    if await has_record_of(request, account, REPOST_COLLECTION, target.uri):
         return False
     record = {"$type": REPOST_COLLECTION, "subject": target.strong_ref(), "createdAt": now_timestamp()}
     await pds.apply_writes(
@@ -232,7 +232,7 @@ async def maybe_handle_reaction(request: Request, event: dict) -> bool:
     try:
         if key == _REPOST_EMOJI:
             await send_repost(request, account, target, source_event_id=event_id)
-        elif not await _has_record_of(request, account, LIKE_COLLECTION, target.uri):
+        elif not await has_record_of(request, account, LIKE_COLLECTION, target.uri):
             record = {"$type": LIKE_COLLECTION, "subject": target.strong_ref(), "createdAt": now_timestamp()}
             await pds.apply_writes(
                 account.did,

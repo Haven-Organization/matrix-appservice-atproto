@@ -16,7 +16,8 @@ banner changing; a "confirm" reply to a Danger Zone warning (see
 ``bridge.danger``); a command addressed to the bot (see
 ``bridge.commands``); a message in a chat room (see ``bridge.chat``); a
 like or repost reaction, or a reply, to a post (see
-``bridge.interactions``); and publishing the owner's message in a Profile
+``bridge.interactions``); a repost card another bridge left in a Profile
+Room (see ``bridge.repost_cards``); and publishing the owner's message in a Profile
 Room (see ``bridge.profile_posts``). The first handler to claim an event ends its
 processing.
 """
@@ -35,6 +36,7 @@ from bridge.chat import (
     maybe_send_chat_reaction,
     maybe_start_chat_from_invite,
 )
+from bridge.repost_cards import maybe_publish_repost_card
 from bridge.commands import bot_mxid, is_bot_user, maybe_handle_command, notice
 from bridge.danger import maybe_handle_confirmation
 from bridge.interactions import maybe_handle_reaction, maybe_publish_reply
@@ -137,6 +139,8 @@ async def _handle_event(request: Request, event: dict[str, Any]) -> None:
     if await maybe_send_chat_reaction(request, event):
         return
     if await maybe_handle_reaction(request, event):
+        return
+    if await maybe_publish_repost_card(request, event):
         return
     if await maybe_publish_reply(request, event):
         return

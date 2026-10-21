@@ -22,6 +22,10 @@ than kept, since it is part of what the user wrote. (Every piece of a
 thread carries the address, as only the first carries the quote.) New
 records are v1 or v3; v2 is only read.
 
+Repost cards (``matrix_repost_card``): v1 is the original. A post linking
+to something reposted through another bridge sharing the Profile Room
+(``repost_card_record_v1``); ``thumb`` is the only thing kept.
+
 Profiles: v1 is the original. v2 adds ``pinned``, the post pinned in the
 Profile Room (``{"event_id", "ref"}``, ``ref`` a strong reference to it);
 with no ``pinned`` it is v1.
@@ -57,6 +61,15 @@ MEDIA_MSGTYPES = ("m.image", "m.video", "m.audio", "m.file")
 EXTERNAL_EMBED_TYPE = "app.bsky.embed.external"
 RECORD_EMBED_TYPE = "app.bsky.embed.record"
 RECORD_WITH_MEDIA_EMBED_TYPE = "app.bsky.embed.recordWithMedia"
+
+# MSC4501 fields read from a repost card (as in bridge.msc4501; repeated
+# here so this module stays free of other bridge imports).
+_SOCIAL_RELATES_TO_FIELD = "org.matrix.msc4501.social.relates_to"
+_SOCIAL_REL_TYPE_REPOST = "org.matrix.msc4501.social.repost"
+_SOCIAL_BODY_FIELD = "org.matrix.msc4501.social.body"
+_MAX_LINK_LENGTH = 2000
+_MAX_CARD_TITLE_LENGTH = 64
+_MAX_CARD_DESCRIPTION_LENGTH = 300
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _URL_TRAILING_PUNCTUATION = ".,;:!?)]}"
@@ -266,6 +279,68 @@ def post_record_v3(
     return post_record_v2(event, part=part, embed=embed, reply=reply, offset=offset, trailing=trailing)
 
 
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def repost_relation(content: dict[str, Any]) -> dict[str, Any] | None:
+    """The MSC4501 repost relation on a message, if it is a repost card."""
+    relation = content.get(_SOCIAL_RELATES_TO_FIELD)
+    if isinstance(relation, dict) and relation.get("rel_type") == _SOCIAL_REL_TYPE_REPOST:
+        return relation
+    return None
+
+
+def repost_card_link(event: dict[str, Any]) -> str | None:
+    """Where the reposted post is on the web: the card's ``external_url``,
+    as the bridges set it on what they mirror. ``None`` if it has none."""
+    url = (event.get("content") or {}).get("external_url")
+    if isinstance(url, str) and len(url) <= _MAX_LINK_LENGTH and re.fullmatch(r"https?://[^\s<>\"']+", url):
+        return url
+    return None
+
+
+def repost_card_record_v1(event: dict[str, Any], *, thumb: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The post standing for a repost made through another bridge -- of a
+    fediverse or Nostr post, say, which Bluesky can't repost natively:
+    "🔁 Reposted X's post" with a link card to the original, titled with
+    its author and described with its text. ``thumb`` (a blob of the
+    card's preview image) is fixed when the post is first made, so the
+    caller supplies it. ``None`` if the event can't produce it (redacted,
+    not a repost card, no link to the original)."""
+    if is_redacted(event):
+        return None
+    content = event.get("content") or {}
+    relation = repost_relation(content)
+    link = repost_card_link(event)
+    if relation is None or link is None:
+        return None
+    name = relation.get("displayname")
+    author = _clip(name, _MAX_CARD_TITLE_LENGTH) if isinstance(name, str) and name.strip() else ""
+    text = content.get(_SOCIAL_BODY_FIELD)
+    external: dict[str, Any] = {
+        "uri": link,
+        "title": author or link,
+        "description": _clip(text, _MAX_CARD_DESCRIPTION_LENGTH) if isinstance(text, str) else "",
+    }
+    if thumb is not None:
+        external["thumb"] = thumb
+    return {
+        "$type": POST_COLLECTION,
+        "text": f"🔁 Reposted {author}'s post" if author else "🔁 Reposted a post",
+        "createdAt": _timestamp(int(event.get("origin_server_ts", 0))),
+        "embed": {"$type": EXTERNAL_EMBED_TYPE, "external": external},
+    }
+
+
+def repost_card_source(room_id: str, event_id: str, *, thumb: dict[str, Any] | None = None) -> dict[str, Any]:
+    source: dict[str, Any] = {"kind": "matrix_repost_card", "v": 1, "room_id": room_id, "event_id": event_id}
+    if thumb is not None:
+        source["thumb"] = lexjson.to_json(thumb)
+    return source
+
+
 def profile_record_v1(
     name: str | None,
     topic: str | None,
@@ -374,9 +449,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
     A failed request raises (the record is unavailable, not gone); only an
     event that is confirmed missing or redacted reports the record gone."""
 
-    async def rebuild_post(source: dict[str, Any]) -> Any:
-        if source.get("v") not in (1, 2, 3):
-            raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
+    async def fetch_event(source: dict[str, Any]) -> dict[str, Any] | None:
         event = await synapse.get_event(source["room_id"], source["event_id"], as_user_id=bot_mxid)
         if event is None:
             # "Not found" is also what Synapse says when the bot simply
@@ -389,6 +462,13 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
             )
             if (membership or {}).get("membership") != "join":
                 raise RuntimeError(f"Bot is not joined to {source['room_id']}")
+        return event
+
+    async def rebuild_post(source: dict[str, Any]) -> Any:
+        if source.get("v") not in (1, 2, 3):
+            raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
+        event = await fetch_event(source)
+        if event is None:
             return None
         embed = lexjson.from_json(source["embed"]) if "embed" in source else None
         reply = lexjson.from_json(source["reply"]) if "reply" in source else None
@@ -414,10 +494,20 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
             drop_link_to=source.get("drop_link_to"),
         )
 
+    async def rebuild_repost_card(source: dict[str, Any]) -> Any:
+        if source.get("v") != 1:
+            raise ValueError(f"Unknown matrix_repost_card version {source.get('v')!r}")
+        event = await fetch_event(source)
+        if event is None:
+            return None
+        thumb = lexjson.from_json(source["thumb"]) if "thumb" in source else None
+        return repost_card_record_v1(event, thumb=thumb)
+
     async def rebuild_profile(source: dict[str, Any]) -> Any:
         if source.get("v") not in (1, 2):
             raise ValueError(f"Unknown matrix_profile version {source.get('v')!r}")
         return await profile_record_from_room(synapse, source, as_user_id=bot_mxid)
 
     sources.register("matrix_post", rebuild_post)
+    sources.register("matrix_repost_card", rebuild_repost_card)
     sources.register("matrix_profile", rebuild_profile)
