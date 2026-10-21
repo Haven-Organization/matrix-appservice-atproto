@@ -42,7 +42,7 @@ from bridge.msc4501 import (
 )
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import PostRef, locate_post_by_event
-from bridge.post_mirroring import REPOST_COLLECTION, matrix_event_link
+from bridge.post_mirroring import REPOST_COLLECTION, at_uri_to_url, matrix_event_link
 from bridge.previews import build_preview_media_content, fetch_post_preview, quote_block, user_display
 from bridge.profile_posts import CARD_SOURCE_KEY, EVENT_CARD_KEY, publish_event_as_posts
 from bridge.repository import Account
@@ -107,7 +107,9 @@ async def _post_card(
     undoes the repost. Formatted like matrix-appservice-activitypub's:
     "post" is a link to the post in Matrix, a preview of it follows, and
     if it is an image or video the card is that image or video at
-    thumbnail size with the text as its caption."""
+    thumbnail size with the text as its caption. Like the sibling bridges'
+    cards it carries the owner's per-message profile and the post's web
+    address (``external_url``)."""
     app = request.app
     config = app.state.config
     synapse = app.state.synapse
@@ -150,6 +152,10 @@ async def _post_card(
         preview_image=preview_image,
         preview_video=preview_video,
     )
+    # The reposted post on the web, as on every post the bridge mirrors:
+    # what a sibling bridge sharing the room links to when it publishes
+    # this repost on its own network.
+    content["external_url"] = at_uri_to_url(target.uri) or link
     if relation:
         content[SOCIAL_RELATES_TO_FIELD] = relation
         # What an MSC4501 client shows in place of the body: for a quote,

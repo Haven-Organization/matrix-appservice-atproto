@@ -83,7 +83,7 @@ def _bot(app: FastAPI) -> str:
     return f"@{config.appservice.bot_localpart}:{config.synapse.server_name}"
 
 
-def _at_uri_to_url(uri: str) -> str | None:
+def at_uri_to_url(uri: str) -> str | None:
     """The bsky.app page for a post's ``at://`` address."""
     parts = uri.removeprefix("at://").split("/")
     if not uri.startswith("at://") or len(parts) != 3 or parts[1] != POST_COLLECTION:
@@ -466,7 +466,7 @@ async def mirror_post(
         if own is not None and own.room_id != room_id:
             echo_into = own.room_id
     elif parent_uri:
-        parent_url = _at_uri_to_url(parent_uri)
+        parent_url = at_uri_to_url(parent_uri)
         if parent_url:
             header = await _reply_header(app, parent_uri, parent_url)
     tail: tuple[str, str] | None = None
@@ -678,7 +678,7 @@ async def _quoted_post_render(
     else:
         # Not in Matrix: read just enough of it to say what was quoted.
         preview_text = ""
-        link = _at_uri_to_url(quoted_uri) or quoted_uri
+        link = at_uri_to_url(quoted_uri) or quoted_uri
         did = quoted_uri.removeprefix("at://").split("/", 1)[0]
         identity = await resolve_did(app.state.http_client, did, plc_directory=config.atproto.plc_directory)
         author_name = f"@{identity.handle}" if identity is not None else did
@@ -768,7 +768,7 @@ async def mirror_repost(app: FastAPI, remote: RemoteAccount, rkey: str, record: 
         "body": link if relation else plain_full,
         "format": "org.matrix.custom.html",
         "formatted_body": formatted_body,
-        "external_url": _at_uri_to_url(target.uri) or link,
+        "external_url": at_uri_to_url(target.uri) or link,
     }
     if original_content.get("msgtype") in ("m.image", "m.video") and isinstance(original_content.get("url"), str):
         # The reposted post is an image or video: so is the repost.
