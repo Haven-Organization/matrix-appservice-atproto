@@ -471,6 +471,18 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
             )
             if (membership or {}).get("membership") != "join":
                 raise RuntimeError(f"Bot is not joined to {source['room_id']}")
+            return event
+        content = event.get("content") or {}
+        new_content = content.get("m.new_content")
+        if (content.get("m.relates_to") or {}).get("rel_type") == "m.replace" and isinstance(new_content, dict):
+            # The event a source points at can itself be an edit (an edited
+            # record's source deliberately points at the edit rather than
+            # the original -- see bridge.edit_bridge): a plain fetch never
+            # bundles ``m.replace`` aggregations, and the ORIGINAL event's
+            # own content never changes, so resolving it here is what keeps
+            # a later self-heal rebuild (``Pds._rebuild``) from reverting an
+            # edit back to stale, pre-edit content.
+            event = {**event, "content": new_content}
         return event
 
     async def rebuild_post(source: dict[str, Any]) -> Any:

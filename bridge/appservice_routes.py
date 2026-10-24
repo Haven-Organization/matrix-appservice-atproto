@@ -12,7 +12,8 @@ being invited to a room to start a chat; a local user joining a room the
 bridge manages for them (which files it in their space) or leaving a
 Remote User Room (which unfollows); a redaction (of a chat message, or of
 an event records were made from); a Profile Room's name, topic, avatar or
-banner changing; a "confirm" reply to a Danger Zone warning (see
+banner changing; an edit of an already-published Profile Room post (see
+``bridge.edit_bridge``); a "confirm" reply to a Danger Zone warning (see
 ``bridge.danger``); a command addressed to the bot (see
 ``bridge.commands``); a message in a chat room (see ``bridge.chat``); a
 like or repost reaction, or a reply, to a post (see
@@ -39,6 +40,7 @@ from bridge.chat import (
 from bridge.repost_cards import maybe_publish_repost_card
 from bridge.commands import bot_mxid, is_bot_user, maybe_handle_command, notice
 from bridge.danger import maybe_handle_confirmation
+from bridge.edit_bridge import maybe_publish_edit
 from bridge.interactions import maybe_handle_reaction, maybe_publish_reply
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave
 from bridge.profile_posts import maybe_handle_profile_room_state, maybe_handle_redaction, maybe_publish_profile_post
@@ -125,6 +127,8 @@ async def _handle_event(request: Request, event: dict[str, Any]) -> None:
     if await maybe_handle_chat_redaction(request, event):
         return
     if await maybe_handle_redaction(request, event):
+        return
+    if await maybe_publish_edit(request, event):
         return
     if await maybe_handle_profile_room_state(request, event):
         return
