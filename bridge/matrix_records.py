@@ -19,8 +19,17 @@ app does with a pasted post link); with no ``trailing`` it is v1. v3
 replaces it with ``drop_link_to``, the address of the quoted post: the
 link itself is found again in the event (``quoted_link_suffix``) rather
 than kept, since it is part of what the user wrote. (Every piece of a
-thread carries the address, as only the first carries the quote.) New
-records are v1 or v3; v2 is only read.
+thread carries the address, as only the first carries the quote.) v4 is
+v3 with links written as links (``rich_text``): a Markdown ``[label](url)``
+reads ``label`` linking to ``url``, as does text only the formatted body
+links; and a thread is split away from links where it can be.
+v5 is v4 headed "↩ In reply to X's post" when the message answers a post
+on another network through another bridge (an MSC4501 social reply that
+isn't to a Bluesky post), "post" linking to it (``reply_header``). Kept:
+``reply_to``, a dict whose presence makes it v5, holding ``link`` -- the
+answered post's address, only when the relation's copy of it lacks one --
+and, for an edit whose new content dropped the relation, ``displayname``.
+New records are v4, or v5 for such a reply; v1-v3 are only read.
 
 Repost cards (``matrix_repost_card``): v1 is the original. A post linking
 to something reposted through another bridge sharing the Profile Room
@@ -73,6 +82,7 @@ RECORD_WITH_MEDIA_EMBED_TYPE = "app.bsky.embed.recordWithMedia"
 # here so this module stays free of other bridge imports).
 _SOCIAL_RELATES_TO_FIELD = "org.matrix.msc4501.social.relates_to"
 _SOCIAL_REL_TYPE_REPOST = "org.matrix.msc4501.social.repost"
+_SOCIAL_REL_TYPE_REPLY = "org.matrix.msc4501.social.reply"
 _SOCIAL_BODY_FIELD = "org.matrix.msc4501.social.body"
 _MAX_LINK_LENGTH = 2000
 _MAX_CARD_TITLE_LENGTH = 64
@@ -313,12 +323,62 @@ def rich_parts(text: str, content: dict[str, Any], limit: int = MAX_POST_LENGTH)
     return _split_rich(plain, links, limit)
 
 
+def social_reply_relation(content: dict[str, Any]) -> dict[str, Any] | None:
+    """The MSC4501 reply relation on a message: what it answers, as another
+    bridge (or its widget) marks a reply to a post on its network."""
+    relation = content.get(_SOCIAL_RELATES_TO_FIELD)
+    if isinstance(relation, dict) and relation.get("rel_type") == _SOCIAL_REL_TYPE_REPLY:
+        return relation
+    return None
+
+
+def reply_header_link(event: dict[str, Any]) -> str | None:
+    """The answered post's address, from the reply relation's own copy of
+    that post, if it carries a usable one."""
+    inner = (social_reply_relation(event.get("content") or {}) or {}).get("content")
+    return external_url({"content": inner}) if isinstance(inner, dict) else None
+
+
+def reply_header(event: dict[str, Any], kept: dict[str, Any] | None) -> tuple[str, list[_LinkSpan]] | None:
+    """v5's header and its link: "↩ In reply to X's post", "post" linking to
+    the answered post. From the event's reply relation, else from ``kept``
+    (an edit that dropped it); ``None`` if neither says what is answered."""
+    relation = social_reply_relation(event.get("content") or {})
+    kept = kept or {}
+    if relation is not None:
+        name, link = relation.get("displayname"), reply_header_link(event) or kept.get("link")
+    elif "displayname" in kept or "link" in kept:
+        name, link = kept.get("displayname"), kept.get("link")
+    else:
+        return None
+    author = _clip(name, _MAX_CARD_TITLE_LENGTH) if isinstance(name, str) and name.strip() else ""
+    text = f"↩ In reply to {author}'s post" if author else "↩ In reply to a post"
+    return text, [(len(text) - len("post"), len(text), link)] if isinstance(link, str) and link else []
+
+
 def rich_post_parts(
-    event: dict[str, Any], *, offset: int = 0, trailing: str | None = None
+    event: dict[str, Any],
+    *,
+    offset: int = 0,
+    trailing: str | None = None,
+    reply_to: dict[str, Any] | None = None,
 ) -> list[tuple[str, list[dict[str, Any]]]] | None:
-    """v4's ``post_parts``: each post's text and link facets."""
+    """v4's ``post_parts``: each post's text and link facets. With
+    ``reply_to`` (v5), headed by ``reply_header``."""
     text = post_text(event, offset=offset, trailing=trailing)
-    return None if text is None else rich_parts(text, event.get("content") or {})
+    if text is None:
+        return None
+    content = event.get("content") or {}
+    if reply_to is None:
+        return rich_parts(text, content)
+    plain, links = rich_text(text, content)
+    header = reply_header(event, reply_to)
+    if header is not None:
+        header_text, header_links = header
+        shift = len(header_text) + 2 if plain else len(header_text)
+        plain = f"{header_text}\n\n{plain}" if plain else header_text
+        links = header_links + [(start + shift, end + shift, address) for start, end, address in links]
+    return _split_rich(plain, links, MAX_POST_LENGTH)
 
 
 # A post's web address, as bsky.app (and other ATProto web clients) write it:
@@ -439,10 +499,25 @@ def post_record_v4(
     drop_link_to: str | None = None,
 ) -> dict[str, Any] | None:
     """v3, with links written as links (``rich_text``)."""
+    return post_record_v5(event, part=part, embed=embed, reply=reply, offset=offset, drop_link_to=drop_link_to)
+
+
+def post_record_v5(
+    event: dict[str, Any],
+    *,
+    part: int = 0,
+    embed: dict[str, Any] | None = None,
+    reply: dict[str, Any] | None = None,
+    offset: int = 0,
+    drop_link_to: str | None = None,
+    reply_to: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """v4, headed "↩ In reply to X's post" (``reply_header``) when
+    ``reply_to`` is given (always, for v5; v4 is v5 without it)."""
     if is_redacted(event):
         return None
     trailing = quoted_link_suffix(event, offset=offset, quoted=drop_link_to)
-    parts = rich_post_parts(event, offset=offset, trailing=trailing)
+    parts = rich_post_parts(event, offset=offset, trailing=trailing, reply_to=reply_to)
     if parts is None or part >= len(parts):
         return None
     text, facets = parts[part]
@@ -614,10 +689,11 @@ def post_source(
     reply: dict[str, Any] | None = None,
     offset: int = 0,
     drop_link_to: str | None = None,
+    reply_to: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source: dict[str, Any] = {
         "kind": "matrix_post",
-        "v": 4,
+        "v": 4 if reply_to is None else 5,
         "room_id": room_id,
         "event_id": event_id,
         "part": part,
@@ -626,6 +702,8 @@ def post_source(
         source["offset"] = offset
     if drop_link_to:
         source["drop_link_to"] = drop_link_to
+    if reply_to is not None:
+        source["reply_to"] = reply_to
     if embed is not None:
         source["embed"] = lexjson.to_json(embed)
     if reply is not None:
@@ -703,7 +781,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         return event
 
     async def rebuild_post(source: dict[str, Any]) -> Any:
-        if source.get("v") not in (1, 2, 3, 4):
+        if source.get("v") not in (1, 2, 3, 4, 5):
             raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
         event = await fetch_event(source)
         if event is None:
@@ -722,6 +800,16 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
                 reply=reply,
                 offset=int(source.get("offset", 0)),
                 trailing=str(source["trailing"]),
+            )
+        if source["v"] == 5:
+            return post_record_v5(
+                event,
+                part=int(source.get("part", 0)),
+                embed=embed,
+                reply=reply,
+                offset=int(source.get("offset", 0)),
+                drop_link_to=source.get("drop_link_to"),
+                reply_to=dict(source["reply_to"]),
             )
         version_record = post_record_v3 if source["v"] == 3 else post_record_v4
         return version_record(

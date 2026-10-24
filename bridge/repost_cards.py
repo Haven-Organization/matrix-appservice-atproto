@@ -31,11 +31,9 @@ removes what was made from it, like any other published event.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import Request
 
-from bridge.commands import bot_mxid
 from bridge.follows import now_timestamp
 from bridge.interactions import has_record_of
 from bridge.matrix_records import (
@@ -50,25 +48,10 @@ from bridge.msc4501 import PER_MESSAGE_PROFILE_FIELD
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import find_linked_post, locate_post_by_event
 from bridge.post_mirroring import REPOST_COLLECTION
-from bridge.profile_posts import _build_embed
+from bridge.profile_posts import _build_embed, original_link
 from bridge.repository import Account
-from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
-
-
-async def _original_link(request: Request, relation: dict[str, Any]) -> str | None:
-    """The reposted event's own ``external_url``, if the bot can read it."""
-    room_id, event_id = relation.get("room_id"), relation.get("event_id")
-    if not isinstance(room_id, str) or not isinstance(event_id, str) or not room_id or not event_id:
-        return None
-    try:
-        original = await request.app.state.synapse.get_event(
-            room_id, event_id, as_user_id=bot_mxid(request.app.state.config)
-        )
-    except SynapseError:
-        return None
-    return external_url(original) if original else None
 
 
 async def _repost(request: Request, account: Account, subject: dict[str, str], event_id: str) -> None:
@@ -115,7 +98,7 @@ async def maybe_publish_repost_card(request: Request, event: dict) -> bool:
         link = external_url(event)
         kept_link = None
         if link is None:
-            kept_link = link = await _original_link(request, relation)
+            kept_link = link = await original_link(request, relation)
         if link is not None:
             linked = await find_linked_post(app, link)
             if linked is not None:

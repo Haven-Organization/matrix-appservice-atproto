@@ -53,7 +53,9 @@ unchanged.
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from fastapi import Request
 
@@ -66,11 +68,13 @@ from bridge.matrix_records import (
     POST_COLLECTION,
     RECORD_EMBED_TYPE,
     RECORD_WITH_MEDIA_EMBED_TYPE,
-    post_record_v4,
+    post_record_v5,
     post_source,
     post_text,
     quoted_link_suffix,
+    reply_header_link,
     rich_post_parts,
+    social_reply_relation,
 )
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import find_linked_post
@@ -130,7 +134,8 @@ async def maybe_publish_edit(request: Request, event: dict) -> bool:
             _url, quoted = linked
             trailing = quoted_link_suffix(synthetic, offset=0, quoted=quoted["uri"])
     drop_link_to = quoted["uri"] if trailing is not None else None
-    parts = rich_post_parts(synthetic, offset=0, trailing=trailing)
+    reply_header = _kept_reply_header(rows[0], new_content, original)
+    parts = rich_post_parts(synthetic, offset=0, trailing=trailing, reply_to=reply_header)
     if parts is None:
         if new_content.get("msgtype") != "m.text":
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
@@ -157,24 +162,53 @@ async def maybe_publish_edit(request: Request, event: dict) -> bool:
         await _edit_in_place(
             request, account, rows[0], synthetic, embed,
             edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
+            reply_header=reply_header,
         )
     else:
         await _delete_and_republish(
             request, account, rows, synthetic, parts, embed,
             edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
+            reply_header=reply_header,
         )
     return True
 
 
+def _kept_reply_header(row: RecordRow, new_content: dict, original: dict | None) -> dict[str, Any] | None:
+    """An edited reply keeps its "↩ In reply to X's post" header (v5). Edits
+    rarely repeat the MSC4501 relation, so when the new content lacks it,
+    what the header needs is taken from the original message and kept."""
+    try:
+        source = json.loads(row.source)
+    except ValueError:
+        return None
+    if source.get("v") != 5:
+        return None
+    kept = dict(source.get("reply_to") or {})
+    relation = social_reply_relation((original or {}).get("content") or {})
+    if social_reply_relation(new_content) is None and relation is not None:
+        name = relation.get("displayname")
+        if isinstance(name, str) and name.strip():
+            kept["displayname"] = name
+        link = kept.get("link") or reply_header_link(original or {})
+        if link:
+            kept["link"] = link
+        else:
+            kept.setdefault("displayname", "")
+    return kept
+
+
 async def _edit_in_place(
     request: Request, account: Account, row: RecordRow, event: dict, embed: dict | None,
-    *, edit_event_id: str, target_event_id: str, drop_link_to: str | None,
+    *, edit_event_id: str, target_event_id: str, drop_link_to: str | None, reply_header: dict[str, Any] | None,
 ) -> None:
-    record = post_record_v4(event, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to)
+    record = post_record_v5(
+        event, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to, reply_to=reply_header
+    )
     if record is None:
         return
     source = post_source(
         event["room_id"], edit_event_id, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to,
+        reply_to=reply_header,
     )
     try:
         await request.app.state.pds.put_record(
@@ -192,7 +226,7 @@ async def _edit_in_place(
 
 async def _delete_and_republish(
     request: Request, account: Account, rows: list[RecordRow], event: dict, parts: list, embed: dict | None,
-    *, edit_event_id: str, target_event_id: str, drop_link_to: str | None,
+    *, edit_event_id: str, target_event_id: str, drop_link_to: str | None, reply_header: dict[str, Any] | None,
 ) -> None:
     repository = request.app.state.repository
     pds = request.app.state.pds
@@ -217,7 +251,10 @@ async def _delete_and_republish(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v4(event, part=index, embed=part_embed, reply=reply, offset=0, drop_link_to=drop_link_to)
+        record = post_record_v5(
+            event, part=index, embed=part_embed, reply=reply, offset=0, drop_link_to=drop_link_to,
+            reply_to=reply_header,
+        )
         if record is None:
             return
         rkey = pds.next_record_key()
@@ -225,7 +262,7 @@ async def _delete_and_republish(
             "create", POST_COLLECTION, rkey, record,
             source=post_source(
                 room_id, edit_event_id, part=index, embed=part_embed, reply=reply, offset=0,
-                drop_link_to=drop_link_to,
+                drop_link_to=drop_link_to, reply_to=reply_header,
             ),
             matrix_event_id=target_event_id,
         ))

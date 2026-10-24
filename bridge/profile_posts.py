@@ -33,16 +33,19 @@ from bridge.matrix_records import (
     RECORD_EMBED_TYPE,
     RECORD_WITH_MEDIA_EMBED_TYPE,
     media_filename,
-    post_record_v4,
+    post_record_v5,
     post_source,
     post_text,
+    external_url,
     quoted_link_suffix,
+    reply_header_link,
     rich_post_parts,
+    social_reply_relation,
 )
 from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.pds import PdsError, Write
-from bridge.post_lookup import PostRef, find_linked_post
+from bridge.post_lookup import PostRef, find_linked_post, locate_post_by_event
 from bridge.profile_sync import PINNED_EVENTS_STATE_TYPE, sync_profile_record
 from bridge.repository import Account, BlobRow, PublishedMedia
 from bridge.synapse_client import SynapseError
@@ -157,6 +160,7 @@ async def publish_event_as_posts(
     reply_to: PostRef | None = None,
     quote: PostRef | None = None,
     offset: int = 0,
+    reply_header: dict[str, Any] | None = None,
 ) -> list[dict[str, str]] | None:
     """Publish a Matrix message as a post by ``account`` -- or a thread of
     posts, if its text is longer than one -- and return a reference to
@@ -170,6 +174,9 @@ async def publish_event_as_posts(
     Without ``quote``, a link to a post in the text quotes that post, as
     the Bluesky app does with a pasted post link; the link is dropped from
     the text if it comes last.
+
+    ``reply_header`` heads it "↩ In reply to X's post": the ``reply_to`` a
+    v5 record keeps (see ``bridge.matrix_records``).
     """
     repository = request.app.state.repository
     room_id = event["room_id"]
@@ -186,7 +193,7 @@ async def publish_event_as_posts(
             # two can't disagree.
             trailing = quoted_link_suffix(event, offset=offset, quoted=quoted["uri"])
     drop_link_to = quoted["uri"] if trailing is not None else None
-    parts = rich_post_parts(event, offset=offset, trailing=trailing)
+    parts = rich_post_parts(event, offset=offset, trailing=trailing, reply_to=reply_header)
     if parts is None:
         if content.get("msgtype") != "m.text":  # an empty text message is just ignored
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
@@ -216,8 +223,14 @@ async def publish_event_as_posts(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v4(
-            event, part=index, embed=part_embed, reply=reply, offset=offset, drop_link_to=drop_link_to
+        record = post_record_v5(
+            event,
+            part=index,
+            embed=part_embed,
+            reply=reply,
+            offset=offset,
+            drop_link_to=drop_link_to,
+            reply_to=reply_header,
         )
         if record is None:
             return None
@@ -229,7 +242,14 @@ async def publish_event_as_posts(
                 rkey,
                 record,
                 source=post_source(
-                    room_id, event_id, part=index, embed=part_embed, reply=reply, offset=offset, drop_link_to=drop_link_to
+                    room_id,
+                    event_id,
+                    part=index,
+                    embed=part_embed,
+                    reply=reply,
+                    offset=offset,
+                    drop_link_to=drop_link_to,
+                    reply_to=reply_header,
                 ),
                 matrix_event_id=event_id,
             )
@@ -277,8 +297,36 @@ async def maybe_publish_profile_post(request: Request, event: dict) -> bool:
         return True
     if await repository.get_records_for_event(event_id):
         return True  # a transaction Synapse delivered twice
-    await publish_event_as_posts(request, account, event)
+    relation = social_reply_relation(content)
+    if relation is None:
+        await publish_event_as_posts(request, account, event)
+        return True
+    # A reply made through another bridge (its widget, say), to a post on
+    # its network -- or to a Bluesky post, which is then answered natively.
+    target = await locate_post_by_event(
+        request.app, str(relation.get("room_id") or ""), str(relation.get("event_id") or ""), last_part=True
+    )
+    if target is not None:
+        await publish_event_as_posts(request, account, event, reply_to=target)
+        return True
+    kept = None if reply_header_link(event) else await original_link(request, relation)
+    await publish_event_as_posts(request, account, event, reply_header={"link": kept} if kept else {})
     return True
+
+
+async def original_link(request: Request, relation: dict[str, Any]) -> str | None:
+    """The ``external_url`` of the event an MSC4501 relation points at (as
+    the bridges set it on the posts they mirror), if the bot can read it."""
+    room_id, event_id = relation.get("room_id"), relation.get("event_id")
+    if not isinstance(room_id, str) or not isinstance(event_id, str) or not room_id or not event_id:
+        return None
+    try:
+        original = await request.app.state.synapse.get_event(
+            room_id, event_id, as_user_id=bot_mxid(request.app.state.config)
+        )
+    except SynapseError:
+        return None
+    return external_url(original) if original else None
 
 
 async def maybe_handle_redaction(request: Request, event: dict) -> bool:
