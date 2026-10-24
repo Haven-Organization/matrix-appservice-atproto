@@ -13,14 +13,17 @@ becomes:
 
 - a native repost, if what it reposts is a Bluesky post -- one in Matrix,
   or one ``external_url`` links to on the web;
-- otherwise a post of the owner's linking to the original: "🔁 Reposted
-  X's post" with a link card titled with X, described with the post's
-  text and showing the preview image (``repost_card_record_v1``).
+- otherwise, if the card carries an image or video Bluesky can show, a
+  post of the owner's with it embedded: "🔁 Reposted X's post", "post"
+  linking to the original, and the post's text (``repost_card_record_v2``);
+- otherwise a post linking to the original: "🔁 Reposted X's post" with a
+  link card titled with X and described with the post's text
+  (``repost_card_record_v1``).
 
 A card without ``external_url`` takes it from the reposted event itself,
 which the bridges mirror with one, if the bot can read it (a world-readable
-Remote User Room); otherwise there is nothing to link to and the card is
-left alone.
+Remote User Room). Without any address the post goes out unlinked, if it
+has media or text to show.
 Redacting the card (the other bridge does, when the repost is undone)
 removes what was made from it, like any other published event.
 """
@@ -32,57 +35,26 @@ from typing import Any
 
 from fastapi import Request
 
-from bridge.atproto.cid import CID
 from bridge.commands import bot_mxid
 from bridge.follows import now_timestamp
 from bridge.interactions import has_record_of
 from bridge.matrix_records import (
     POST_COLLECTION,
-    media_filename,
     external_url,
     repost_card_record_v1,
+    repost_card_record_v2,
     repost_card_source,
     repost_relation,
 )
-from bridge.media import prepare_image
 from bridge.msc4501 import PER_MESSAGE_PROFILE_FIELD
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import find_linked_post, locate_post_by_event
 from bridge.post_mirroring import REPOST_COLLECTION
-from bridge.repository import Account, BlobRow
+from bridge.profile_posts import _build_embed
+from bridge.repository import Account
 from bridge.synapse_client import SynapseError
 
 logger = logging.getLogger(__name__)
-
-
-async def _thumb(request: Request, account: Account, event: dict) -> dict[str, Any] | None:
-    """A blob of the card's preview image, if it has one that can be used."""
-    content = event.get("content") or {}
-    mxc = content.get("url")
-    if content.get("msgtype") != "m.image" or not isinstance(mxc, str) or "file" in content:
-        return None
-    synapse = request.app.state.synapse
-    try:
-        download = await synapse.download_media(mxc)
-    except SynapseError:
-        logger.info("Could not download repost card preview %s", mxc, exc_info=True)
-        return None
-    image = await prepare_image(download.content) if download is not None else None
-    if image is None:
-        return None
-    if image.reencoded:
-        try:
-            mxc = await synapse.upload_media(
-                image.data, image.mime_type, media_filename(event), as_user_id=bot_mxid(request.app.state.config)
-            )
-        except SynapseError:
-            logger.info("Could not store re-encoded preview for %s", event["event_id"], exc_info=True)
-            return None
-    cid = CID.for_raw(image.data)
-    await request.app.state.repository.add_blob(
-        BlobRow(account.did, str(cid), mxc, image.mime_type, len(image.data), event["event_id"])
-    )
-    return {"$type": "blob", "ref": cid, "mimeType": image.mime_type, "size": len(image.data)}
 
 
 async def _original_link(request: Request, relation: dict[str, Any]) -> str | None:
@@ -144,32 +116,30 @@ async def maybe_publish_repost_card(request: Request, event: dict) -> bool:
         kept_link = None
         if link is None:
             kept_link = link = await _original_link(request, relation)
-        if link is None:
-            logger.info("Repost card %s has no external_url to link to; not published", event_id)
-            return True
-        linked = await find_linked_post(app, link)
-        if linked is not None:
-            await _repost(request, account, linked[1], event_id)
-            return True
-        thumb = await _thumb(request, account, event)
-        record = repost_card_record_v1(event, thumb=thumb, link=kept_link)
+        if link is not None:
+            linked = await find_linked_post(app, link)
+            if linked is not None:
+                await _repost(request, account, linked[1], event_id)
+                return True
+        media = None
+        if content.get("msgtype") in ("m.image", "m.video"):
+            media = await _build_embed(request, account, event, native_only=True)
+        if media is None and link is not None:
+            # Nothing to show but the address: a link card to it.
+            record = repost_card_record_v1(event, link=kept_link)
+            source = repost_card_source(room_id, event_id, link=kept_link)
+        else:
+            record = repost_card_record_v2(event, media=media, link=kept_link)
+            source = repost_card_source(room_id, event_id, media=media, link=kept_link, v=2)
         if record is None:
+            logger.info("Repost card %s has nothing to show (no address, media or text); not published", event_id)
             return True
         pds = app.state.pds
         await pds.apply_writes(
             account.did,
-            [
-                Write(
-                    "create",
-                    POST_COLLECTION,
-                    pds.next_record_key(),
-                    record,
-                    source=repost_card_source(room_id, event_id, thumb=thumb, link=kept_link),
-                    matrix_event_id=event_id,
-                )
-            ],
+            [Write("create", POST_COLLECTION, pds.next_record_key(), record, source=source, matrix_event_id=event_id)],
         )
-        logger.info("%s shared a repost of %s (card %s)", account.did, link, event_id)
+        logger.info("%s shared a repost of %s (card %s)", account.did, link or relation.get("event_id"), event_id)
     except PdsError as exc:
         logger.warning("Repost card %s for %s failed: %s", event_id, account.did, exc.message)
         await repository.forget_media_for_event(event_id)

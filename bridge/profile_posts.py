@@ -33,11 +33,11 @@ from bridge.matrix_records import (
     RECORD_EMBED_TYPE,
     RECORD_WITH_MEDIA_EMBED_TYPE,
     media_filename,
-    post_parts,
-    post_record_v3,
+    post_record_v4,
     post_source,
     post_text,
     quoted_link_suffix,
+    rich_post_parts,
 )
 from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
@@ -65,10 +65,21 @@ def _blob_ref(cid: CID, mime_type: str, size: int) -> dict[str, Any]:
     return {"$type": "blob", "ref": cid, "mimeType": mime_type, "size": size}
 
 
-async def _build_embed(request: Request, account: Account, event: dict) -> dict[str, Any] | None:
+async def _build_embed(
+    request: Request, account: Account, event: dict, *, native_only: bool = False
+) -> dict[str, Any] | None:
     """The embed for a media message, with whatever it refers to (a blob,
     a published file) recorded. ``None`` if the media can't be used, in
-    which case the owner has been told why."""
+    which case the owner has been told why.
+
+    ``native_only`` (for media someone else posted, as on a repost card):
+    only an image or video Bluesky shows itself, never a link to the file,
+    and ``None`` without a word to the room if there is none."""
+
+    async def refuse(message: str) -> None:
+        if not native_only:
+            await notice(request, room_id, message)
+
     config = request.app.state.config
     synapse = request.app.state.synapse
     repository = request.app.state.repository
@@ -77,7 +88,7 @@ async def _build_embed(request: Request, account: Account, event: dict) -> dict[
     content = event.get("content") or {}
     mxc = content.get("url")
     if not isinstance(mxc, str) or "file" in content:
-        await notice(request, room_id, "That attachment is encrypted, so I can't publish it.")
+        await refuse("That attachment is encrypted, so I can't publish it.")
         return None
     try:
         download = await synapse.download_media(mxc)
@@ -85,7 +96,7 @@ async def _build_embed(request: Request, account: Account, event: dict) -> dict[
         logger.warning("Could not download %s", mxc, exc_info=True)
         download = None
     if download is None:
-        await notice(request, room_id, "I couldn't fetch that attachment, so it wasn't published.")
+        await refuse("I couldn't fetch that attachment, so it wasn't published.")
         return None
     info = content.get("info") if isinstance(content.get("info"), dict) else {}
     mime_type = (info.get("mimetype") or download.content_type).split(";", 1)[0].strip().lower()
@@ -102,7 +113,7 @@ async def _build_embed(request: Request, account: Account, event: dict) -> dict[
                     )
                 except SynapseError:
                     logger.warning("Could not store re-encoded image for %s", event_id, exc_info=True)
-                    await notice(request, room_id, "I couldn't prepare that image, so it wasn't published.")
+                    await refuse("I couldn't prepare that image, so it wasn't published.")
                     return None
             cid = CID.for_raw(image.data)
             await repository.add_blob(BlobRow(account.did, str(cid), mxc, image.mime_type, len(image.data), event_id))
@@ -122,6 +133,8 @@ async def _build_embed(request: Request, account: Account, event: dict) -> dict[
             embed["aspectRatio"] = ratio
         return embed
 
+    if native_only:
+        return None
     # No native form: link to the file, served by the bridge itself. The
     # card's title (the filename) is filled in from the event whenever the
     # record is built, so it is not kept here.
@@ -173,7 +186,7 @@ async def publish_event_as_posts(
             # two can't disagree.
             trailing = quoted_link_suffix(event, offset=offset, quoted=quoted["uri"])
     drop_link_to = quoted["uri"] if trailing is not None else None
-    parts = post_parts(event, offset=offset, trailing=trailing)
+    parts = rich_post_parts(event, offset=offset, trailing=trailing)
     if parts is None:
         if content.get("msgtype") != "m.text":  # an empty text message is just ignored
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
@@ -203,7 +216,7 @@ async def publish_event_as_posts(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v3(
+        record = post_record_v4(
             event, part=index, embed=part_embed, reply=reply, offset=offset, drop_link_to=drop_link_to
         )
         if record is None:

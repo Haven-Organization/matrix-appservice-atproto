@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request
 from bridge.atproto.identity import RemoteIdentity, post_url, resolve_did
 from bridge.atproto.keys import SigningKey
 from bridge.atproto.service_auth import service_auth_token
-from bridge.matrix_records import MEDIA_MSGTYPES, _link_facets, media_filename, message_body, split_text
+from bridge.matrix_records import MEDIA_MSGTYPES, media_filename, message_body, rich_parts
 from bridge.post_mirroring import render_text
 from bridge.ghost_ids import did_for_ghost, ghost_user_id
 from bridge.remote_accounts import ensure_ghost
@@ -265,14 +265,15 @@ async def maybe_send_chat_message(request: Request, event: dict) -> bool:
         await _notice(app, room_id, "That kind of message can't be sent in a Bluesky chat.")
         return True
 
-    parts = split_text(text, _MAX_MESSAGE_LENGTH)
+    # A caption's links are found as for a text message; the file's own
+    # link added after it is a bare address either way.
+    parts = rich_parts(text, content, _MAX_MESSAGE_LENGTH)
     if len(parts) > _MAX_MESSAGE_PARTS:
         await _notice(app, room_id, "That message is too long to send as a chat.")
         return True
     try:
-        for index, part in enumerate(parts):
+        for index, (part, facets) in enumerate(parts):
             message: dict[str, Any] = {"text": part}
-            facets = _link_facets(part)
             if facets:
                 message["facets"] = facets
             if reply_to and index == 0:

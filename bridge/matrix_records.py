@@ -26,7 +26,11 @@ Repost cards (``matrix_repost_card``): v1 is the original. A post linking
 to something reposted through another bridge sharing the Profile Room
 (``repost_card_record_v1``). Kept: ``thumb``, and ``link`` -- the
 original's address, only when the card itself doesn't carry it (read once
-from the reposted event, which may not stay readable).
+from the reposted event, which may not stay readable). v2 is a post of
+its own instead of a link card, for a card with media or no address
+(``repost_card_record_v2``): "🔁 Reposted X's post" ("post" linking to the
+original if there is an address), the reposted text, and the card's image
+or video embedded. Kept: ``media`` (that embed) and ``link``, as in v1.
 
 Profiles: v1 is the original. v2 adds ``pinned``, the post pinned in the
 Profile Room (``{"event_id", "ref"}``, ``ref`` a strong reference to it);
@@ -35,6 +39,7 @@ with no ``pinned`` it is v1.
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -183,6 +188,139 @@ def _link_facets(text: str) -> list[dict[str, Any]]:
     return facets
 
 
+# v4 links (``rich_text``). A Markdown link's address may hold one level of
+# balanced parentheses, as Wikipedia's often do.
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\[\]\n]+)\]\((https?://(?:[^\s()<>\"']|\([^\s()<>\"']*\))+)\)")
+_HTML_ANCHOR_RE = re.compile(r"<a\s[^>]*?href=(\"[^\"]*\"|'[^']*')[^>]*>(.*?)</a\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_REPLY_FALLBACK_RE = re.compile(r"<mx-reply>.*?</mx-reply>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WEB_LINK_RE = re.compile(r"https?://[^\s<>\"']+")
+_LinkSpan = tuple[int, int, str]  # start and end (code points) in the text, and the address
+
+
+def _html_links(content: dict[str, Any]) -> list[tuple[str, str]] | None:
+    """``(address, text)`` of each web link in the message's formatted
+    body, leaving out the quoted reply fallback and links to Matrix users
+    or rooms. ``None`` if the message has no formatted body."""
+    formatted = content.get("formatted_body")
+    if content.get("format") != "org.matrix.custom.html" or not isinstance(formatted, str):
+        return None
+    links = []
+    for match in _HTML_ANCHOR_RE.finditer(_HTML_REPLY_FALLBACK_RE.sub("", formatted)):
+        address = html.unescape(match.group(1)[1:-1]).strip()
+        text = html.unescape(_HTML_TAG_RE.sub("", match.group(2))).strip()
+        if _WEB_LINK_RE.fullmatch(address) and not address.startswith("https://matrix.to/"):
+            links.append((address, text))
+    return links
+
+
+def rich_text(text: str, content: dict[str, Any]) -> tuple[str, list[_LinkSpan]]:
+    """``text`` as it reads with its links written as links, and where those
+    links are:
+
+    - ``[label](address)`` (Markdown, as Matrix clients send a link in the
+      plain body) reads ``label``. If the message has a formatted body, it
+      must link to that address too, so Markdown-looking text the sender's
+      client didn't treat as a link (in a code block, say) stays as it is;
+    - a bare address is a link to itself, as in every version;
+    - text the formatted body links somewhere that the plain body doesn't
+      say (a client that sends only the label there) links its first
+      occurrence not already part of a link.
+    """
+    html_links = _html_links(content)
+    addresses = None if html_links is None else {address for address, _ in html_links}
+    pieces: list[str] = []
+    links: list[_LinkSpan] = []
+    length = position = 0
+    for match in _MARKDOWN_LINK_RE.finditer(text):
+        label, address = match.group(1).strip(), match.group(2)
+        if not label or (addresses is not None and address not in addresses):
+            continue
+        before = text[position : match.start()]
+        pieces += [before, label]
+        links.append((length + len(before), length + len(before) + len(label), address))
+        length += len(before) + len(label)
+        position = match.end()
+    pieces.append(text[position:])
+    plain = "".join(pieces)
+
+    def overlaps(start: int, end: int) -> bool:
+        return any(start < link_end and link_start < end for link_start, link_end, _ in links)
+
+    for match in _URL_RE.finditer(plain):
+        url = match.group(0).rstrip(_URL_TRAILING_PUNCTUATION)
+        if not overlaps(match.start(), match.start() + len(url)):
+            links.append((match.start(), match.start() + len(url), url))
+    for address, label in html_links or ():
+        if not label or any(linked == address for _, _, linked in links):
+            continue
+        start = plain.find(label)
+        while start != -1 and overlaps(start, start + len(label)):
+            start = plain.find(label, start + 1)
+        if start != -1:
+            links.append((start, start + len(label), address))
+    return plain, sorted(links)
+
+
+def _split_rich(text: str, links: list[_LinkSpan], limit: int) -> list[tuple[str, list[dict[str, Any]]]]:
+    """``split_text``, but each piece comes with its link facets, and a piece
+    breaks at whitespace outside a link if there is any in its second half
+    (a link that must be cut anyway links from both pieces)."""
+
+    def inside_link(at: int) -> bool:
+        return any(start < at < end for start, end, _ in links)
+
+    bounds: list[tuple[int, int]] = []
+    offset = 0
+    while len(text) - offset > limit:
+        window = text[offset : offset + limit + 1]
+        breaks = [i for i, char in enumerate(window) if char in " \n"]
+        outside = [i for i in breaks if not inside_link(offset + i)]
+        cut = max(outside, default=-1)
+        if cut < limit // 2:
+            cut = max(breaks, default=-1)
+        if cut < limit // 2:
+            cut = limit
+        piece = text[offset : offset + cut].rstrip()
+        bounds.append((offset, offset + len(piece)))
+        rest = text[offset + cut :]
+        offset += cut + len(rest) - len(rest.lstrip())
+    bounds.append((offset, len(text)))
+
+    parts = []
+    for begin, finish in bounds:
+        piece = text[begin:finish]
+        facets = []
+        for start, end, address in links:
+            start, end = max(start, begin), min(end, finish)
+            if start >= end:
+                continue
+            byte_start = len(piece[: start - begin].encode("utf-8"))
+            facets.append(
+                {
+                    "index": {"byteStart": byte_start, "byteEnd": byte_start + len(piece[start - begin : end - begin].encode("utf-8"))},
+                    "features": [{"$type": "app.bsky.richtext.facet#link", "uri": address}],
+                }
+            )
+        parts.append((piece, facets))
+    return parts
+
+
+def rich_parts(text: str, content: dict[str, Any], limit: int = MAX_POST_LENGTH) -> list[tuple[str, list[dict[str, Any]]]]:
+    """``text`` (from a message with ``content``) as pieces of at most
+    ``limit`` characters, each with the facets that make its links links."""
+    plain, links = rich_text(text, content)
+    return _split_rich(plain, links, limit)
+
+
+def rich_post_parts(
+    event: dict[str, Any], *, offset: int = 0, trailing: str | None = None
+) -> list[tuple[str, list[dict[str, Any]]]] | None:
+    """v4's ``post_parts``: each post's text and link facets."""
+    text = post_text(event, offset=offset, trailing=trailing)
+    return None if text is None else rich_parts(text, event.get("content") or {})
+
+
 # A post's web address, as bsky.app (and other ATProto web clients) write it:
 # the account (handle or DID) and the post's record key.
 POST_LINK_RE = re.compile(r"^https?://[^/]+/profile/([^/?#]+)/post/([A-Za-z0-9._:~-]+)/?$")
@@ -246,12 +384,22 @@ def post_record_v2(
     if parts is None or part >= len(parts):
         return None
     text = parts[part]
+    return _post_record(event, text, _link_facets(text), embed=embed, reply=reply)
+
+
+def _post_record(
+    event: dict[str, Any],
+    text: str,
+    facets: list[dict[str, Any]],
+    *,
+    embed: dict[str, Any] | None,
+    reply: dict[str, Any] | None,
+) -> dict[str, Any]:
     record: dict[str, Any] = {
         "$type": POST_COLLECTION,
         "text": text,
         "createdAt": _timestamp(int(event.get("origin_server_ts", 0))),
     }
-    facets = _link_facets(text)
     if facets:
         record["facets"] = facets
     if embed is not None:
@@ -279,6 +427,26 @@ def post_record_v3(
     the link to post ``drop_link_to`` ending the text, if there is one."""
     trailing = quoted_link_suffix(event, offset=offset, quoted=drop_link_to)
     return post_record_v2(event, part=part, embed=embed, reply=reply, offset=offset, trailing=trailing)
+
+
+def post_record_v4(
+    event: dict[str, Any],
+    *,
+    part: int = 0,
+    embed: dict[str, Any] | None = None,
+    reply: dict[str, Any] | None = None,
+    offset: int = 0,
+    drop_link_to: str | None = None,
+) -> dict[str, Any] | None:
+    """v3, with links written as links (``rich_text``)."""
+    if is_redacted(event):
+        return None
+    trailing = quoted_link_suffix(event, offset=offset, quoted=drop_link_to)
+    parts = rich_post_parts(event, offset=offset, trailing=trailing)
+    if parts is None or part >= len(parts):
+        return None
+    text, facets = parts[part]
+    return _post_record(event, text, facets, embed=embed, reply=reply)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -339,14 +507,63 @@ def repost_card_record_v1(
     }
 
 
+def repost_card_record_v2(
+    event: dict[str, Any], *, media: dict[str, Any] | None = None, link: str | None = None
+) -> dict[str, Any] | None:
+    """v1, but a post of its own rather than a link card: "🔁 Reposted X's
+    post", with "post" linking to the original if there is an address, the
+    reposted text below, and ``media`` (an images or video embed of the
+    card's own media, fixed when the post is first made) embedded. ``None``
+    if the event can't produce it (redacted, not a repost card, nothing to
+    show: no media, text or address)."""
+    if is_redacted(event):
+        return None
+    content = event.get("content") or {}
+    relation = repost_relation(content)
+    if relation is None:
+        return None
+    link = external_url(event) or link
+    said = content.get(_SOCIAL_BODY_FIELD)
+    said = said if isinstance(said, str) and said.strip() else ""
+    if media is None and link is None and not said:
+        return None
+    name = relation.get("displayname")
+    author = _clip(name, _MAX_CARD_TITLE_LENGTH) if isinstance(name, str) and name.strip() else ""
+    text = f"🔁 Reposted {author}'s post" if author else "🔁 Reposted a post"
+    record: dict[str, Any] = {"$type": POST_COLLECTION, "text": text}
+    if link is not None:
+        start = len(text[: -len("post")].encode("utf-8"))
+        record["facets"] = [
+            {
+                "index": {"byteStart": start, "byteEnd": start + len("post")},
+                "features": [{"$type": "app.bsky.richtext.facet#link", "uri": link}],
+            }
+        ]
+    if said:
+        record["text"] = f"{text}\n\n{_clip(said, MAX_POST_LENGTH - len(text) - 2)}"
+    record["createdAt"] = _timestamp(int(event.get("origin_server_ts", 0)))
+    if media is not None:
+        record["embed"] = media
+    return record
+
+
 def repost_card_source(
-    room_id: str, event_id: str, *, thumb: dict[str, Any] | None = None, link: str | None = None
+    room_id: str,
+    event_id: str,
+    *,
+    thumb: dict[str, Any] | None = None,
+    media: dict[str, Any] | None = None,
+    link: str | None = None,
+    v: int = 1,
 ) -> dict[str, Any]:
-    source: dict[str, Any] = {"kind": "matrix_repost_card", "v": 1, "room_id": room_id, "event_id": event_id}
+    """``thumb`` is v1's, ``media`` v2's."""
+    source: dict[str, Any] = {"kind": "matrix_repost_card", "v": v, "room_id": room_id, "event_id": event_id}
     if link is not None:
         source["link"] = link
     if thumb is not None:
         source["thumb"] = lexjson.to_json(thumb)
+    if media is not None:
+        source["media"] = lexjson.to_json(media)
     return source
 
 
@@ -400,7 +617,7 @@ def post_source(
 ) -> dict[str, Any]:
     source: dict[str, Any] = {
         "kind": "matrix_post",
-        "v": 3 if drop_link_to else 1,
+        "v": 4,
         "room_id": room_id,
         "event_id": event_id,
         "part": part,
@@ -486,7 +703,7 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         return event
 
     async def rebuild_post(source: dict[str, Any]) -> Any:
-        if source.get("v") not in (1, 2, 3):
+        if source.get("v") not in (1, 2, 3, 4):
             raise ValueError(f"Unknown matrix_post version {source.get('v')!r}")
         event = await fetch_event(source)
         if event is None:
@@ -506,7 +723,8 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
                 offset=int(source.get("offset", 0)),
                 trailing=str(source["trailing"]),
             )
-        return post_record_v3(
+        version_record = post_record_v3 if source["v"] == 3 else post_record_v4
+        return version_record(
             event,
             part=int(source.get("part", 0)),
             embed=embed,
@@ -516,11 +734,14 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         )
 
     async def rebuild_repost_card(source: dict[str, Any]) -> Any:
-        if source.get("v") != 1:
+        if source.get("v") not in (1, 2):
             raise ValueError(f"Unknown matrix_repost_card version {source.get('v')!r}")
         event = await fetch_event(source)
         if event is None:
             return None
+        if source["v"] == 2:
+            media = lexjson.from_json(source["media"]) if "media" in source else None
+            return repost_card_record_v2(event, media=media, link=source.get("link"))
         thumb = lexjson.from_json(source["thumb"]) if "thumb" in source else None
         return repost_card_record_v1(event, thumb=thumb, link=source.get("link"))
 

@@ -66,11 +66,11 @@ from bridge.matrix_records import (
     POST_COLLECTION,
     RECORD_EMBED_TYPE,
     RECORD_WITH_MEDIA_EMBED_TYPE,
-    post_parts,
-    post_record_v3,
+    post_record_v4,
     post_source,
     post_text,
     quoted_link_suffix,
+    rich_post_parts,
 )
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import find_linked_post
@@ -130,7 +130,7 @@ async def maybe_publish_edit(request: Request, event: dict) -> bool:
             _url, quoted = linked
             trailing = quoted_link_suffix(synthetic, offset=0, quoted=quoted["uri"])
     drop_link_to = quoted["uri"] if trailing is not None else None
-    parts = post_parts(synthetic, offset=0, trailing=trailing)
+    parts = rich_post_parts(synthetic, offset=0, trailing=trailing)
     if parts is None:
         if new_content.get("msgtype") != "m.text":
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
@@ -170,7 +170,7 @@ async def _edit_in_place(
     request: Request, account: Account, row: RecordRow, event: dict, embed: dict | None,
     *, edit_event_id: str, target_event_id: str, drop_link_to: str | None,
 ) -> None:
-    record = post_record_v3(event, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to)
+    record = post_record_v4(event, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to)
     if record is None:
         return
     source = post_source(
@@ -191,7 +191,7 @@ async def _edit_in_place(
 
 
 async def _delete_and_republish(
-    request: Request, account: Account, rows: list[RecordRow], event: dict, parts: list[str], embed: dict | None,
+    request: Request, account: Account, rows: list[RecordRow], event: dict, parts: list, embed: dict | None,
     *, edit_event_id: str, target_event_id: str, drop_link_to: str | None,
 ) -> None:
     repository = request.app.state.repository
@@ -217,7 +217,7 @@ async def _delete_and_republish(
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
-        record = post_record_v3(event, part=index, embed=part_embed, reply=reply, offset=0, drop_link_to=drop_link_to)
+        record = post_record_v4(event, part=index, embed=part_embed, reply=reply, offset=0, drop_link_to=drop_link_to)
         if record is None:
             return
         rkey = pds.next_record_key()
