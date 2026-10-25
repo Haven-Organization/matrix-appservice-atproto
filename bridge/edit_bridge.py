@@ -10,20 +10,19 @@ the sibling ``matrix-appservice-activitypub`` bridge's own
 edit as a silent no-op (see its own now-defensive ``"m.relates_to" in
 content`` guard) -- the edit never reached Bluesky at all.
 
-A single-post edit (the post was, and still is, exactly one thread part)
-is applied as a true in-place AT Protocol edit: ``Pds.put_record`` with the
-SAME rkey, so the post's ``at://`` URI never changes and any existing
-likes/reposts/quotes/replies on it stay valid. An edit that changes the
-post's *shape* -- e.g. it used to spill into a second thread post and the
-edited text now fits in one, or vice versa -- can't be done in place (a
-thread is a real chain of distinct records, each later one's own
-``reply.parent`` strong-ref pinned to the CID of the one before it, not
-something resizable without re-chaining every part after the change), so
-the old records are deleted and the edited content is published fresh
-under new rkeys, keeping the SAME Matrix event id so a later edit or
-redaction still finds it. This does orphan any likes/reposts/quotes/
-replies that existed on the deleted records -- there's no way around that
-for a shape-changing edit.
+Bluesky's app (bsky.app's AppView) shows a post as it was first
+published and ignores later changes to it (confirmed live: in-place edits
+reached the relay but never showed), so an edit only shows if the post is
+published again: the old records deleted and the edited content published
+under new rkeys in the same commit, keeping the SAME Matrix event id so a
+later edit or redaction still finds it, and the first post still replying
+to what it replied to. That orphans the old post's likes/reposts/quotes/
+replies, so it is done only when the AppView reports none (or the edit
+changes the post's shape -- one post to a thread or back -- which can't be
+done in place anyway). Otherwise the record is changed in place with
+``Pds.put_record`` (same rkey, which other AppViews may show) and the owner
+is told ``]republish`` forces it (``republish``). A republished pinned post
+is pinned again (``refresh_pin``).
 
 A record's own ``source`` recipe (``room_id``, ``event_id``, ...) is what
 ``Pds``'s self-heal (``_rebuild``/``_snapshot_locked``) uses to re-derive a
@@ -59,7 +58,8 @@ from typing import Any
 
 from fastapi import Request
 
-from bridge.atproto import cbor
+from bridge.atproto import cbor, lexjson
+from bridge.atproto.identity import _PUBLIC_APPVIEW, fetch_public
 from bridge.atproto.cid import CID
 from bridge.commands import bot_mxid, notice
 from bridge.matrix_records import (
@@ -78,7 +78,8 @@ from bridge.matrix_records import (
 )
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import find_linked_post
-from bridge.profile_posts import _build_embed
+from bridge.profile_posts import _build_embed, refresh_pin
+
 from bridge.repository import Account, RecordRow
 from bridge.synapse_client import SynapseError
 
@@ -124,7 +125,33 @@ async def maybe_publish_edit(request: Request, event: dict) -> bool:
         # Keep Bluesky's createdAt stable across an edit, same convention
         # as the content itself: only what the post SAYS changes.
         synthetic["origin_server_ts"] = original["origin_server_ts"]
+    await _apply_edit(
+        request, account, rows, synthetic, original, edit_event_id=edit_event_id, target_event_id=target_event_id
+    )
+    return True
 
+
+async def _apply_edit(
+    request: Request,
+    account: Account,
+    rows: list[RecordRow],
+    synthetic: dict,
+    original: dict | None,
+    *,
+    edit_event_id: str,
+    target_event_id: str,
+    force: bool = False,
+) -> bool:
+    """Bring the posts made from ``target_event_id`` in line with
+    ``synthetic`` (the event as it now reads). Bluesky's app shows a post as
+    it was first published and ignores later changes to it, so an edit only
+    shows if the post is published again, as a new post, which loses its
+    likes, reposts, replies and quotes. That is done when it has none (or
+    ``force``); otherwise it is changed in place, which only other apps
+    show, and the owner is told how to force it (``]republish``). True if
+    Bluesky was updated (in place or anew)."""
+    room_id = synthetic["room_id"]
+    new_content = synthetic.get("content") or {}
     text = post_text(synthetic, offset=0)
     trailing = None
     quoted = None
@@ -134,43 +161,140 @@ async def maybe_publish_edit(request: Request, event: dict) -> bool:
             _url, quoted = linked
             trailing = quoted_link_suffix(synthetic, offset=0, quoted=quoted["uri"])
     drop_link_to = quoted["uri"] if trailing is not None else None
-    reply_header = _kept_reply_header(rows[0], new_content, original)
+    reply_header = _kept_reply_header(_first_part(rows), new_content, original)
     parts = rich_post_parts(synthetic, offset=0, trailing=trailing, reply_to=reply_header)
     if parts is None:
         if new_content.get("msgtype") != "m.text":
             await notice(request, room_id, "That kind of message can't be published to Bluesky.")
-        return True
+        return False
     if len(parts) > MAX_THREAD_POSTS:
         await notice(
             request, room_id,
             f"That edit would take a thread of {len(parts)} posts; the limit is {MAX_THREAD_POSTS}, "
             "so the Bluesky post wasn't updated.",
         )
-        return True
+        return False
 
     embed = None
     if new_content.get("msgtype") in MEDIA_MSGTYPES:
         embed = await _build_embed(request, account, synthetic)
         if embed is None:
-            return True  # _build_embed already told the room why
+            return False  # _build_embed already told the room why
 
     if quoted is not None:
         record_embed = {"$type": RECORD_EMBED_TYPE, "record": quoted}
         embed = {"$type": RECORD_WITH_MEDIA_EMBED_TYPE, "record": record_embed, "media": embed} if embed else record_embed
 
-    if len(parts) == 1 and len(rows) == 1:
-        await _edit_in_place(
-            request, account, rows[0], synthetic, embed,
-            edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
-            reply_header=reply_header,
-        )
-    else:
-        await _delete_and_republish(
-            request, account, rows, synthetic, parts, embed,
-            edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
-            reply_header=reply_header,
-        )
+    first = _first_part(rows)
+    if len(parts) == 1 and len(rows) == 1 and not force:
+        interactions = await _interactions(request, rows)
+        if interactions != "":
+            await _edit_in_place(
+                request, account, first, synthetic, embed,
+                edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
+                reply_header=reply_header,
+            )
+            p = request.app.state.config.appservice.command_prefix
+            why = (
+                f"it already has {interactions} there" if interactions
+                else "I couldn't check whether anyone has interacted with it there"
+            )
+            await notice(
+                request, room_id,
+                f"Bluesky doesn't show edits to posts, and {why}, so it still shows the original. "
+                f"To show the edit anyway, as a new post (losing those), reply to the post with {p}republish.",
+            )
+            return True
+    if not await _delete_and_republish(
+        request, account, rows, synthetic, parts, embed,
+        edit_event_id=edit_event_id, target_event_id=target_event_id, drop_link_to=drop_link_to,
+        reply_header=reply_header,
+    ):
+        return False
+    await refresh_pin(request, account.did, target_event_id)
     return True
+
+
+def _source(row: RecordRow) -> dict[str, Any]:
+    try:
+        source = json.loads(row.source)
+    except ValueError:
+        return {}
+    return source if isinstance(source, dict) else {}
+
+
+def _first_part(rows: list[RecordRow]) -> RecordRow:
+    return min(rows, key=lambda row: int(_source(row).get("part", 0)))
+
+
+def _thread_reply(row: RecordRow) -> dict[str, Any] | None:
+    """What the first post answers, if it is a reply: kept through an edit."""
+    reply = _source(row).get("reply")
+    return lexjson.from_json(reply) if reply is not None else None
+
+
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s" if not word.endswith("y") else f"{n} {word[:-1]}ies"
+
+
+async def _interactions(request: Request, rows: list[RecordRow]) -> str | None:
+    """The likes, reposts, replies and quotes the posts have on Bluesky,
+    said in words ("2 likes, 1 reply"); "" for none (or not on Bluesky
+    yet); ``None`` if Bluesky couldn't be asked."""
+    uris = [f"at://{row.did}/{row.collection}/{row.rkey}" for row in rows]
+    response = await fetch_public(
+        request.app.state.http_client, f"{_PUBLIC_APPVIEW}/xrpc/app.bsky.feed.getPosts", params={"uris": uris}
+    )
+    if response is None:
+        return None
+    try:
+        posts = response.json().get("posts") or []
+    except ValueError:
+        return None
+    totals = {"like": 0, "repost": 0, "reply": 0, "quote": 0}
+    for post in posts:
+        for kind in totals:
+            count = post.get(f"{kind}Count")
+            totals[kind] += count if isinstance(count, int) and count > 0 else 0
+    return ", ".join(_count(n, kind) for kind, n in totals.items() if n)
+
+
+async def republish(request: Request, account: Account, target_event_id: str) -> bool | None:
+    """Publish the posts made from ``target_event_id`` again, as they now
+    read, so an edit Bluesky's app ignores shows (``]republish``). ``None``
+    if none of the account's posts were made from it; False if it couldn't
+    be done (the room has been told why)."""
+    rows = [row for row in await request.app.state.repository.get_records_for_event(target_event_id)
+            if row.did == account.did and row.collection == POST_COLLECTION]
+    if not rows:
+        return None
+    source = _source(_first_part(rows))
+    room_id, source_event_id = source.get("room_id"), source.get("event_id")
+    if not isinstance(room_id, str) or not isinstance(source_event_id, str):
+        return None
+    synapse = request.app.state.synapse
+    bot = bot_mxid(request.app.state.config)
+    original = None
+    try:
+        latest = await synapse.get_event(room_id, source_event_id, as_user_id=bot)
+        original = latest if source_event_id == target_event_id else await synapse.get_event(
+            room_id, target_event_id, as_user_id=bot
+        )
+    except SynapseError:
+        latest = None
+    if latest is None:
+        await notice(request, room_id, "I couldn't read that post's message, so it wasn't republished.")
+        return False
+    synthetic = dict(latest)
+    new_content = (latest.get("content") or {}).get("m.new_content")
+    if isinstance(new_content, dict):
+        synthetic["content"] = new_content
+    if original is not None and isinstance(original.get("origin_server_ts"), int):
+        synthetic["origin_server_ts"] = original["origin_server_ts"]
+    return await _apply_edit(
+        request, account, rows, synthetic, original,
+        edit_event_id=source_event_id, target_event_id=target_event_id, force=True,
+    )
 
 
 def _kept_reply_header(row: RecordRow, new_content: dict, original: dict | None) -> dict[str, Any] | None:
@@ -201,13 +325,14 @@ async def _edit_in_place(
     request: Request, account: Account, row: RecordRow, event: dict, embed: dict | None,
     *, edit_event_id: str, target_event_id: str, drop_link_to: str | None, reply_header: dict[str, Any] | None,
 ) -> None:
+    reply = _thread_reply(row)
     record = post_record_v5(
-        event, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to, reply_to=reply_header
+        event, part=0, embed=embed, reply=reply, offset=0, drop_link_to=drop_link_to, reply_to=reply_header
     )
     if record is None:
         return
     source = post_source(
-        event["room_id"], edit_event_id, part=0, embed=embed, reply=None, offset=0, drop_link_to=drop_link_to,
+        event["room_id"], edit_event_id, part=0, embed=embed, reply=reply, offset=0, drop_link_to=drop_link_to,
         reply_to=reply_header,
     )
     try:
@@ -227,27 +352,20 @@ async def _edit_in_place(
 async def _delete_and_republish(
     request: Request, account: Account, rows: list[RecordRow], event: dict, parts: list, embed: dict | None,
     *, edit_event_id: str, target_event_id: str, drop_link_to: str | None, reply_header: dict[str, Any] | None,
-) -> None:
+) -> bool:
+    """The old posts deleted and the new ones made in one commit, so a
+    failure leaves the old ones in place. True if it went through."""
     repository = request.app.state.repository
     pds = request.app.state.pds
     room_id = event["room_id"]
-    try:
-        await pds.apply_writes(rows[0].did, [Write("delete", row.collection, row.rkey) for row in rows])
-    except PdsError as exc:
-        logger.warning(
-            "Deleting %s's old records for edit of %s failed: %s", rows[0].did, target_event_id, exc.message
-        )
-        await notice(request, room_id, "Couldn't update that post on Bluesky.")
-        return
-    await repository.forget_media_for_event(target_event_id)
-
     # Same loop publish_event_as_posts runs for a fresh post -- not reused
     # directly because it ties a write's ``source["event_id"]`` and
     # ``matrix_event_id`` to the SAME id, and here they must differ (see
-    # module docstring).
-    writes: list[Write] = []
-    root_ref: dict[str, str] | None = None
-    parent_ref: dict[str, str] | None = None
+    # module docstring). A post that answered another still does.
+    first_reply = _thread_reply(_first_part(rows))
+    root_ref = first_reply["root"] if first_reply else None
+    parent_ref = first_reply["parent"] if first_reply else None
+    writes: list[Write] = [Write("delete", row.collection, row.rkey) for row in rows]
     for index in range(len(parts)):
         reply = {"root": root_ref, "parent": parent_ref} if parent_ref is not None else None
         part_embed = embed if index == 0 else None
@@ -256,7 +374,7 @@ async def _delete_and_republish(
             reply_to=reply_header,
         )
         if record is None:
-            return
+            return False
         rkey = pds.next_record_key()
         writes.append(Write(
             "create", POST_COLLECTION, rkey, record,
@@ -277,8 +395,13 @@ async def _delete_and_republish(
     except PdsError as exc:
         logger.warning("Republishing edited %s for %s failed: %s", target_event_id, account.did, exc.message)
         await notice(request, room_id, "Couldn't update that post on Bluesky.")
-        return
+        return False
+    if edit_event_id != target_event_id:
+        # The old version's media; the new version's is kept under the
+        # edit's own id (unless it is the same id: republished unedited).
+        await repository.forget_media_for_event(target_event_id)
     logger.info(
-        "Republished %s (edit) as %d post(s) for %s (source event %s)",
-        target_event_id, len(writes), account.did, edit_event_id,
+        "Republished %s as %d post(s) for %s (source event %s)",
+        target_event_id, len(writes) - len(rows), account.did, edit_event_id,
     )
+    return True

@@ -365,13 +365,14 @@ async def maybe_handle_redaction(request: Request, event: dict) -> bool:
         logger.info("Deleting records of %s after redaction of %s: %s", did, redacted_id, exc.message)
     else:
         logger.info("Deleted %d record(s) of %s: Matrix event %s was redacted", len(rows), did, redacted_id)
-    await _unpin_if_pinned(request, did, redacted_id)
+    await refresh_pin(request, did, redacted_id)
     return True
 
 
-async def _unpin_if_pinned(request: Request, did: str, event_id: str) -> None:
-    """A redacted post stays in the room's pinned list (clients keep the
-    ID), so if it was the profile's pinned post, choose again."""
+async def refresh_pin(request: Request, did: str, event_id: str) -> None:
+    """If the profile's pinned post was made from ``event_id``, work it out
+    again: a redacted post stays in the room's pinned list (clients keep the
+    ID), so another is chosen; a republished one is a new post to point at."""
     repository = request.app.state.repository
     row = await repository.get_record(did, PROFILE_COLLECTION, PROFILE_RKEY)
     if row is None or (json.loads(row.source).get("pinned") or {}).get("event_id") != event_id:

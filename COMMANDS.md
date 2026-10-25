@@ -30,6 +30,7 @@ Everything that happens without a command (posting, liking, replying, what shows
   - [`]chat` / `]dm`](#chat-handleexamplecom--dm-handleexamplecom)
   - [`]import <url>`](#import-url)
   - [`]repost`](#repost-reply-to-a-post)
+  - [`]republish`](#republish-reply-to-your-post)
 - [Advanced/Maintenance](#advancedmaintenance)
   - [`]block`](#block-handleexamplecom)
   - [`]unblock`](#unblock-handleexamplecom)
@@ -184,6 +185,16 @@ Following, chat and everyday commands.
 **Who can run it:** Requires an identity. "A post" is any message that stands for one: a mirrored Bluesky post in any room (including a mirrored repost, which acts on the original), or a local user's own post.
 
 **Notes:** Undo it by removing the 🔁 reaction, redacting the command message, or redacting the card; any of the three works, and the other is cleaned up. Reposting something twice does nothing the second time.
+
+### `]republish` (reply to your post)
+
+**Syntax:** Send `]republish` as a reply to one of your posts.
+
+**What it does:** Publishes the post again, as a new post, as the message now reads. Bluesky's app ignores edits to a post, so this is how an edit shows. The bridge does it by itself when you edit a post nobody has interacted with; when someone has, it tells you to use this.
+
+**Who can run it:** Requires an identity, and the post must be yours.
+
+**Notes:** The old post's likes, reposts, replies and quotes are lost: they belong to the old post. The new post keeps the original date, still answers what it answered, and stays pinned if it was.
 
 ---
 

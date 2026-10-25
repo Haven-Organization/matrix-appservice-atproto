@@ -68,7 +68,7 @@ BLOCK_COLLECTION = "app.bsky.graph.block"
 
 # Longer keywords first where one is a prefix of another.
 _COMMAND_KEYWORDS = (
-    "unfollow|following|follow|unblock|block|backfill|banner|create|import|refresh|repost|status|help|"
+    "unfollow|following|follow|unblock|block|backfill|banner|create|import|refresh|republish|repost|status|help|"
     "unlink|link|replace|delete|widget|chat|dm"
 )
 
@@ -249,6 +249,8 @@ async def maybe_handle_command(request: Request, event: dict) -> bool:
         await _handle_import(request, argument=argument, **context)
     elif keyword == "repost":
         await _handle_repost(request, event=event, argument=argument, **context)
+    elif keyword == "republish" and not lowered:
+        await _handle_republish(request, event=event, **context)
     elif keyword in ("block", "unblock"):
         await _handle_block(request, argument=argument, block=keyword == "block", **context)
     elif keyword == "backfill":
@@ -337,6 +339,11 @@ def _help_sections(config: Any) -> dict[str, tuple[str, str, list[tuple[str, str
                 (
                     f"{p}import https://bsky.app/profile/.../post/...",
                     "Bring one specific post into Matrix without following its author.",
+                ),
+                (
+                    f"{p}republish",
+                    "Reply to one of your posts with this to publish it again as a new post, so an edit shows on "
+                    "Bluesky. Its likes, reposts, replies and quotes are lost.",
                 ),
                 (
                     f"{p}repost [your text]",
@@ -934,6 +941,25 @@ async def _handle_repost(request: Request, *, sender: str, room_id: str, event: 
     except PdsError:
         logger.warning("Repost by %s failed", account.did, exc_info=True)
         await notice(request, room_id, "Couldn't repost that.")
+
+
+async def _handle_republish(request: Request, *, sender: str, room_id: str, event: dict) -> None:
+    """``republish`` as a reply to one of the sender's posts publishes it
+    again as it now reads: Bluesky's app ignores edits to a post, so this
+    is how an edit to one that people have interacted with shows."""
+    # Imported here: bridge.edit_bridge itself builds on this module.
+    from bridge.edit_bridge import republish
+
+    account = await _require_account(request, sender=sender, room_id=room_id)
+    if account is None:
+        return
+    target_event = reply_target_event_id(event.get("content") or {})
+    p = request.app.state.config.appservice.command_prefix
+    done = await republish(request, account, target_event) if target_event else None
+    if done is None:
+        await notice(request, room_id, f"Reply to one of your own posts with {p}republish to publish it again.")
+    elif done:
+        await notice(request, room_id, "Republished.")
 
 
 # -- advanced / maintenance ---------------------------------------------------

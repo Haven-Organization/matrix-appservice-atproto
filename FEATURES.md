@@ -15,10 +15,11 @@ Most of the bridge needs no commands at all.
 - A caption on any of these becomes the post's text.
 - A **link to a Bluesky post** (`bsky.app/profile/.../post/...`) makes it a quote of that post, as pasting one into the Bluesky app does. If the link comes last it is dropped from the text, so a message that is only the link is a bare quote. The first link to a post that can be found is quoted; one that can't stays an ordinary link. A captioned image or video becomes a quote with that media.
 - **Redacting** a message deletes everything published from it.
+- **Editing** a message updates the post. Bluesky's app shows a post as it was first published and ignores later changes, so the post is published again as a new post (same date, still answering what it answered, still pinned if it was). That loses the old post's likes, reposts, replies and quotes, so it is only done when it has none; otherwise the post is changed in place (which other apps may show) and the room is told that `]republish`, as a reply to the post, forces it. An edit that turns a post into a thread, or a thread into a single post, is always published anew.
 - Changing the room's **name, topic or avatar** changes your display name, bio and avatar.
 - **Pinning** one of your posts in the room pins it on your profile, as in matrix-appservice-activitypub. Bluesky pins one post, so it is the one pinned most recently; pins of anything that isn't one of your posts are passed over. A post made into a thread pins its first post. Unpinning it, or redacting it, falls back to the next pinned post, or to none.
 - Replies to your posts from Bluesky appear as a thread under the post, each from its author's ghost user, and you can answer in the thread.
-- Messages from anyone else in the room (unless they reply to a post, which publishes a reply from *their* account) and edits are not published.
+- Messages from anyone else in the room (unless they reply to a post, which publishes a reply from *their* account) are not published.
 
 **On any post, in any room**
 
