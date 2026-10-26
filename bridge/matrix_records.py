@@ -40,6 +40,12 @@ its own instead of a link card, for a card with media or no address
 (``repost_card_record_v2``): "🔁 Reposted X's post" ("post" linking to the
 original if there is an address), the reposted text, and the card's image
 or video embedded. Kept: ``media`` (that embed) and ``link``, as in v1.
+v3 is v2 but for the text (``repost_card_record_v3``): a ``social.body``
+that is only the attachment's filename (a bridge's stand-in for an
+uncaptioned image) is left out, and a card without one takes the reposted
+post's, from the relation's inline copy. The embedded media may now come
+from that copy too, but ``media`` is kept, so that needs no new version.
+New cards with media or no address are v3.
 
 Profiles: v1 is the original. v2 adds ``pinned``, the post pinned in the
 Profile Room (``{"event_id", "ref"}``, ``ref`` a strong reference to it);
@@ -597,9 +603,47 @@ def repost_card_record_v2(
     relation = repost_relation(content)
     if relation is None:
         return None
-    link = external_url(event) or link
     said = content.get(_SOCIAL_BODY_FIELD)
     said = said if isinstance(said, str) and said.strip() else ""
+    return _repost_card_post(event, relation, said, media=media, link=link)
+
+
+def repost_card_record_v3(
+    event: dict[str, Any], *, media: dict[str, Any] | None = None, link: str | None = None
+) -> dict[str, Any] | None:
+    """v2, but the reposted text is ``repost_card_text``'s."""
+    if is_redacted(event):
+        return None
+    content = event.get("content") or {}
+    relation = repost_relation(content)
+    if relation is None:
+        return None
+    return _repost_card_post(event, relation, repost_card_text(content), media=media, link=link)
+
+
+def repost_card_text(content: dict[str, Any]) -> str:
+    """The reposted post's text: the card's ``social.body``, or else that of
+    the relation's inline copy of the post -- but not a bare filename,
+    which a bridge puts there for an image or video without a caption."""
+    relation = repost_relation(content) or {}
+    inline = relation.get("content") if isinstance(relation.get("content"), dict) else {}
+    filenames = {name.strip() for name in (content.get("filename"), inline.get("filename")) if isinstance(name, str)}
+    for candidate in (content, inline):
+        said = candidate.get(_SOCIAL_BODY_FIELD)
+        if isinstance(said, str) and said.strip():
+            return "" if said.strip() in filenames else said
+    return ""
+
+
+def _repost_card_post(
+    event: dict[str, Any],
+    relation: dict[str, Any],
+    said: str,
+    *,
+    media: dict[str, Any] | None,
+    link: str | None,
+) -> dict[str, Any] | None:
+    link = external_url(event) or link
     if media is None and link is None and not said:
         return None
     name = relation.get("displayname")
@@ -822,14 +866,15 @@ def register_matrix_sources(sources: RecordSources, synapse: SynapseClient, *, b
         )
 
     async def rebuild_repost_card(source: dict[str, Any]) -> Any:
-        if source.get("v") not in (1, 2):
+        if source.get("v") not in (1, 2, 3):
             raise ValueError(f"Unknown matrix_repost_card version {source.get('v')!r}")
         event = await fetch_event(source)
         if event is None:
             return None
-        if source["v"] == 2:
+        if source["v"] in (2, 3):
             media = lexjson.from_json(source["media"]) if "media" in source else None
-            return repost_card_record_v2(event, media=media, link=source.get("link"))
+            build = repost_card_record_v2 if source["v"] == 2 else repost_card_record_v3
+            return build(event, media=media, link=source.get("link"))
         thumb = lexjson.from_json(source["thumb"]) if "thumb" in source else None
         return repost_card_record_v1(event, thumb=thumb, link=source.get("link"))
 

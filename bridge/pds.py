@@ -43,7 +43,7 @@ _RKEY_RE = re.compile(r"^[A-Za-z0-9._:~-]{1,512}$")
 _PLC_ROTATION_KEY = "plc_rotation"
 
 # At most one unprompted crawl request per this many seconds.
-_CRAWL_REQUEST_INTERVAL = 300.0
+_CRAWL_REQUEST_INTERVAL = 1200.0  # as the reference PDS (20 minutes)
 
 
 class PdsError(Exception):
@@ -136,13 +136,15 @@ class Pds:
         return results
 
     def nudge_relays(self) -> None:
-        """Ask the relays to (re)connect if nobody is listening to the
-        firehose -- called at startup and after each commit. A relay only
-        learns this PDS is back after a restart, or exists at all, by
-        being told; without this, posts made while it is disconnected
-        would sit unseen until it next tried on its own. Rate-limited, and
-        run in the background so a slow relay never delays a write."""
-        if self._firehose.subscriber_count or not self._relays:
+        """Ask the relays to (re)connect -- called at startup and after each
+        commit, as the reference PDS does. A relay that couldn't reach this
+        PDS for a while (a reboot, say) marks it offline and stops trying
+        until asked again, so without this, posts would sit unseen. Asked
+        whoever else is subscribed: other consumers of the firehose say
+        nothing about whether the relays are. Harmless to a relay already
+        connected. Rate-limited, and run in the background so a slow relay
+        never delays a write."""
+        if not self._relays:
             return
         now = time.monotonic()
         if now - self._last_crawl_request < _CRAWL_REQUEST_INTERVAL:
