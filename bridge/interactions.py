@@ -29,7 +29,14 @@ from typing import Any
 
 from fastapi import Request
 
-from bridge.commands import bot_mxid, is_bot_user, message_addresses_bot, message_for_other_bot, notice
+from bridge.commands import (
+    bot_mxid,
+    is_bot_user,
+    message_addresses_bot,
+    message_for_other_bot,
+    message_is_aside,
+    notice,
+)
 from bridge.follows import now_timestamp
 from bridge.matrix_records import post_text
 from bridge.msc4501 import (
@@ -280,6 +287,8 @@ async def maybe_publish_reply(request: Request, event: dict) -> bool:
         return False
     if message_for_other_bot(content, config):
         return True  # e.g. another bridge's command given as a reply to a post
+    if message_is_aside(content, config):
+        return True  # "] ...": a reply said in Matrix only
     target = await locate_post_by_event(app, room_id, target_event, last_part=True)
     if target is None:
         return False

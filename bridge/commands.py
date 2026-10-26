@@ -96,12 +96,13 @@ def is_bot_user(config: Any, user_id: str) -> bool:
 
 
 def _prefixed_command_re(prefix: str) -> re.Pattern[str]:
-    # Anchored to the start of the line and requiring a known keyword right
-    # after the prefix: a prefix with anything else after it is NOT treated
-    # as addressing the bot. Tagging the bot is unambiguous; a one-character
-    # symbol at the start of a line can easily just be someone's ordinary
-    # message, which must not be swallowed.
-    return re.compile(rf"^{re.escape(prefix)}\s*({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
+    # Anchored to the start of the line and requiring a known keyword
+    # directly after the prefix: a prefix with anything else after it is NOT
+    # treated as addressing the bot. Tagging the bot is unambiguous; a
+    # one-character symbol at the start of a line can easily just be
+    # someone's ordinary message, which must not be swallowed. A prefix and
+    # a space is an aside (``message_is_aside``), never a command.
+    return re.compile(rf"^{re.escape(prefix)}({_COMMAND_KEYWORDS})\b\s*(.*)", re.IGNORECASE)
 
 
 def reply_target_event_id(content: dict) -> str | None:
@@ -151,6 +152,17 @@ def message_for_other_bot(content: dict, config: Any) -> bool:
         return True
     mentioned = (content.get("m.mentions") or {}).get("user_ids") or []
     return any(bot in mentioned or bot in line for bot in config.appservice.other_bot_users)
+
+
+def message_is_aside(content: dict, config: Any) -> bool:
+    """Whether a message is an aside: its first line starts with a command
+    prefix -- this bot's or one of ``other_command_prefixes`` -- and then a
+    space ("] just chatting"). A way to talk in a Profile Room without
+    posting: never published, as a post or as a reply, and not a command
+    (no help, even for the prefix alone)."""
+    line = _first_line(content)
+    prefixes = (config.appservice.command_prefix, *config.appservice.other_command_prefixes)
+    return any(p and line.startswith(p) and line[len(p) : len(p) + 1].isspace() for p in prefixes)
 
 
 def message_addresses_bot(content: dict, config: Any) -> bool:

@@ -20,6 +20,9 @@ Most of the bridge needs no commands at all.
 - **Pinning** one of your posts in the room pins it on your profile, as in matrix-appservice-activitypub. Bluesky pins one post, so it is the one pinned most recently; pins of anything that isn't one of your posts are passed over. A post made into a thread pins its first post. Unpinning it, or redacting it, falls back to the next pinned post, or to none.
 - Replies to your posts from Bluesky appear as a thread under the post, each from its author's ghost user, and you can answer in the thread.
 - Messages from anyone else in the room (unless they reply to a post, which publishes a reply from *their* account) are not published.
+- <a id="chatting-in-your-profile-room"></a>**Chatting in your Profile Room** with someone you've invited doesn't post anything when you either:
+  - **reply to something that isn't a post**, such as their message or one of your asides, as a rich reply or in a thread. A reply to one of your posts is still published as a reply;
+  - **start the message with a command prefix and a space** (an aside): `] see you tomorrow`. Any of the other bots' prefixes (`appservice.other_command_prefixes`) work too, so `; ` and `[ ` keep the message off the other networks as well, if those bridges follow the same rule. The bot doesn't answer an aside, not even `] ` on its own.
 
 **On any post, in any room**
 

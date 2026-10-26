@@ -22,7 +22,7 @@ from fastapi import Request
 
 from bridge.atproto import cbor
 from bridge.atproto.cid import CID
-from bridge.commands import bot_mxid, message_addresses_bot, message_for_other_bot, notice
+from bridge.commands import bot_mxid, message_addresses_bot, message_for_other_bot, message_is_aside, notice
 from bridge.matrix_records import (
     EXTERNAL_EMBED_TYPE,
     MAX_THREAD_POSTS,
@@ -289,11 +289,14 @@ async def maybe_publish_profile_post(request: Request, event: dict) -> bool:
         return True
     if message_for_other_bot(content, request.app.state.config):
         return True  # a command for another bot sharing the room
+    if message_is_aside(content, request.app.state.config):
+        return True  # "] ...": said in the room, not posted
     if "m.relates_to" in content or "m.new_content" in content:
         # An edit must not post its "* new text" fallback as a new post.
         # (A reply to a post is handled before this, in
-        # bridge.interactions; one that reaches here answers something
-        # that isn't a post.)
+        # bridge.interactions; one that reaches here -- a rich reply or a
+        # thread message -- answers something that isn't a post, such as
+        # someone else's message, and so is conversation, not a post.)
         return True
     if await repository.get_records_for_event(event_id):
         return True  # a transaction Synapse delivered twice

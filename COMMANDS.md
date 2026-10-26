@@ -4,7 +4,8 @@ The bridge is controlled from inside Matrix by either tagging/mentioning the bot
 
 - A command is only recognized on the **first line** of a message. If the message is a reply, the quoted fallback some clients prepend is skipped first.
 - Keyword matching is case-insensitive.
-- The `]` prefix only counts when a real command word follows it immediately. A message that merely starts with `]` is an ordinary message (and, in your Profile Room, an ordinary post).
+- The `]` prefix only counts when a real command word follows it immediately (`]help`, not `] help`). A message that merely starts with `]` is an ordinary message (and, in your Profile Room, an ordinary post).
+- `]` followed by a space is an **aside**: `] just chatting` is said in the room but never published, as a post or as a reply, and the bot doesn't answer it (not even `] ` alone). The same goes for the other bots' prefixes in `appservice.other_command_prefixes`. See [Chatting in your Profile Room](FEATURES.md#chatting-in-your-profile-room).
 - Every command **except `]help`** only works for users on the bridge's own homeserver. Anyone on any server can invite the bot to a room, and this stops them minting identities under your domain.
 - The bridge's own bot and ghost accounts never trigger commands, so a mirrored post that happens to start with `]` is never misread as one.
 - Tagging the bot with no recognized command shows the `]help` section overview (if nothing else was said) or a short pointer to `]help` (if something else was said that wasn't recognized).
