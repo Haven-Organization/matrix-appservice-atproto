@@ -22,6 +22,7 @@ Setting the bridge up, natively or in Docker. Because every user's handle is its
 - A **wildcard DNS record and wildcard TLS certificate** for that domain (steps 1 and 2 below).
 - A reverse proxy (nginx in the examples) in front of the bridge.
 - Python 3.12 or newer (developed and run on 3.14), or Docker.
+- Optionally, `ffmpeg` (with libx264), to publish animated GIFs as video Bluesky plays like a GIF. Without it they go out as still images. The Docker image includes it.
 
 ## 1. DNS
 

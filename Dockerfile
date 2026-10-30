@@ -6,6 +6,11 @@ FROM python:3.14-slim AS base
 RUN groupadd --gid 999 bridge \
     && useradd --system --uid 999 --gid 999 --create-home --shell /usr/sbin/nologin bridge
 
+# ffmpeg: animated images are published as video (bridge.media).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .

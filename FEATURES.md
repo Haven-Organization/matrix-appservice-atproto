@@ -10,6 +10,7 @@ Most of the bridge needs no commands at all.
 
 - A **text message** from you is published as a post. Text longer than one post (300 characters) becomes a thread of up to 25 posts, split at word boundaries; anything longer is refused with a notice. Links are clickable: a bare address links to itself, and a Markdown link (`[label](https://…)`, which is how Matrix clients send a link) shows just its label, linking to the address, as does text your client's formatted message links somewhere. A thread is split outside links where possible.
 - An **image** is published as a native image. It is re-encoded as JPEG if it is larger than 1 MB, in a format Bluesky doesn't accept, or carries metadata (photo EXIF data often includes GPS coordinates).
+- An **animated image** (GIF, animated WebP or PNG) is published as a short video that Bluesky plays like a GIF (looping, no controls), since Bluesky shows images only as stills. Its own app does the same with an uploaded GIF. This needs `ffmpeg` installed; without it, or if the conversion fails, the image is published as it is (a still on Bluesky). Animations longer than a minute are cut off, and larger than 1080 pixels scaled down.
 - An **MP4 video** is published as a native video.
 - **Any other file** (documents, audio, other video formats) is published as a link card pointing at the file, served by the bridge.
 - A caption on any of these becomes the post's text.

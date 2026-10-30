@@ -43,7 +43,7 @@ from bridge.matrix_records import (
     social_reply_relation,
 )
 from bridge.encrypted_media import encrypted_file, hold
-from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
+from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, animation_to_mp4, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.pds import PdsError, Write
 from bridge.post_lookup import PostRef, find_linked_post, locate_post_by_event
@@ -113,6 +113,30 @@ async def _build_embed(
     data = download.content
 
     if content.get("msgtype") == "m.image" or mime_type.startswith("image/"):
+        # An animation (a GIF, say) as a looping video: Bluesky shows
+        # images only as stills. Without ffmpeg, the image as it is.
+        animation = await animation_to_mp4(data)
+        if animation is not None:
+            try:
+                video_mxc = await synapse.upload_media(
+                    animation.data, VIDEO_MIME_TYPE, filename.rsplit(".", 1)[0] + ".mp4", as_user_id=bot_mxid(config)
+                )
+            except SynapseError:
+                logger.warning("Could not store the video made from %s; publishing it as an image", event_id, exc_info=True)
+            else:
+                cid = CID.for_raw(animation.data)
+                await repository.add_blob(
+                    BlobRow(account.did, str(cid), video_mxc, VIDEO_MIME_TYPE, len(animation.data), event_id)
+                )
+                gif: dict[str, Any] = {
+                    "$type": "app.bsky.embed.video",
+                    "video": _blob_ref(cid, VIDEO_MIME_TYPE, len(animation.data)),
+                    "presentation": "gif",
+                }
+                ratio = _aspect_ratio(animation.width, animation.height)
+                if ratio:
+                    gif["aspectRatio"] = ratio
+                return gif
         image = await prepare_image(data)
         if image is not None:
             if image.reencoded:

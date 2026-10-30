@@ -20,11 +20,16 @@ encoder could not promise.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,105 @@ async def prepare_image(data: bytes) -> PreparedImage | None:
     """``data`` as an image Bluesky will accept, or ``None`` if it isn't a
     decodable image (or can't be made small enough)."""
     return await asyncio.to_thread(_prepare_image, data)
+
+
+# Animations become video at this frame rate; each frame is held for as
+# many video frames as its own duration covers.
+_ANIMATION_FPS = 25
+# Longest side of the video; larger animations are scaled down.
+_ANIMATION_MAX_SIDE = 1080
+# Longer animations are cut off here.
+_ANIMATION_MAX_SECONDS = 60
+_FFMPEG_TIMEOUT_SECONDS = 120
+
+
+@dataclass(frozen=True)
+class PreparedVideo:
+    data: bytes
+    width: int
+    height: int
+
+
+async def animation_to_mp4(data: bytes) -> PreparedVideo | None:
+    """An animated image (GIF, WebP, APNG) as an MP4 video, since Bluesky
+    shows images only as still pictures (its own app turns an uploaded GIF
+    into a video the same way). ``None`` if ``data`` isn't an animation, or
+    can't be converted -- ffmpeg not installed, say -- in which case the
+    caller publishes the image as it is."""
+    return await asyncio.to_thread(_animation_to_mp4, data)
+
+
+def _animation_to_mp4(data: bytes) -> PreparedVideo | None:
+    try:
+        image = Image.open(io.BytesIO(data))
+        if not getattr(image, "is_animated", False):
+            return None
+    except Exception:
+        return None
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        logger.info("ffmpeg is not installed; publishing an animated image as a still one")
+        return None
+    width, height = image.size
+    scale = min(1.0, _ANIMATION_MAX_SIDE / max(width, height))
+    # H.264 in yuv420p needs even dimensions.
+    out_w, out_h = max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
+    with tempfile.TemporaryDirectory() as tmp:
+        output, log = Path(tmp) / "out.mp4", Path(tmp) / "ffmpeg.log"
+        command = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{out_w}x{out_h}", "-r", str(_ANIMATION_FPS), "-i", "pipe:0",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", "-an", "-f", "mp4", str(output),
+        ]  # fmt: skip
+        try:
+            with log.open("wb") as stderr:
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=stderr)
+                try:
+                    assert process.stdin is not None
+                    _write_frames(image, process.stdin, (out_w, out_h))
+                    process.stdin.close()
+                    process.wait(timeout=_FFMPEG_TIMEOUT_SECONDS)
+                except BaseException:
+                    process.kill()
+                    process.wait()
+                    with contextlib.suppress(OSError):
+                        process.stdin.close()  # unflushed frames, for an ffmpeg gone
+                    raise
+        except (OSError, subprocess.SubprocessError, ValueError):
+            logger.warning("Could not convert an animated image to video", exc_info=True)
+            return None
+        if process.returncode != 0 or not output.exists():
+            logger.warning("ffmpeg failed to convert an animated image: %s", log.read_text(errors="replace")[:500])
+            return None
+        video = output.read_bytes()
+    if not video or len(video) > VIDEO_MAX_BYTES:
+        return None
+    return PreparedVideo(video, out_w, out_h)
+
+
+def _write_frames(image: Image.Image, sink, size: tuple[int, int]) -> None:
+    """Each frame, flattened onto white and scaled to ``size``, written as
+    raw RGB once per video frame it lasts for."""
+    shown = 0  # video frames written so far
+    elapsed = 0.0  # milliseconds of animation so far
+    limit = _ANIMATION_MAX_SECONDS * 1000
+    for frame in ImageSequence.Iterator(image):
+        duration = frame.info.get("duration") or 0
+        # Browsers show frames given no (or a tiny) duration for 100ms.
+        elapsed += duration if duration > 10 else 100
+        target = round(min(elapsed, limit) * _ANIMATION_FPS / 1000)
+        rgba = frame.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.getchannel("A"))
+        if flat.size != size:
+            flat = flat.resize(size, Image.Resampling.LANCZOS)
+        raw = flat.tobytes()
+        for _ in range(max(target - shown, 1 if shown == 0 else 0)):
+            sink.write(raw)
+            shown += 1
+        if elapsed >= limit:
+            break
 
 
 def format_size(size: int) -> str:
