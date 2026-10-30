@@ -251,6 +251,11 @@ async def maybe_send_chat_message(request: Request, event: dict) -> bool:
     if msgtype in MEDIA_MSGTYPES:
         mxc = content.get("url")
         if not isinstance(mxc, str) or "file" in content:
+            from bridge.encrypted_media import encrypted_file, hold
+
+            if encrypted_file(content) is not None:
+                hold(app)  # sent once a decrypted copy is confirmed (bridge.encrypted_media)
+                return True
             await _notice(app, room_id, "That attachment is encrypted, so I can't send it.")
             return True
         # Chat has no attachments: send a link to the file instead.

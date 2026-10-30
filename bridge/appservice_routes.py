@@ -7,7 +7,10 @@ registration file.
 
 It authenticates, skips events it has already handled (Synapse resends a
 transaction on timeout/error; remembered by event ID, persisted, so safe
-across a restart of either side), then for each event tries, in order: accepting an invite extended to the bot; a ghost
+across a restart of either side), swaps an encrypted file already decrypted
+once for its plaintext copy, then for each event tries, in order: accepting
+an invite extended to the bot; a confirmation of an encrypted file's prompt,
+or another bridge's decrypted copy of one (see ``bridge.encrypted_media``); a ghost
 being invited to a room to start a chat; a local user joining a room the
 bridge manages for them (which files it in their space) or leaving a
 Remote User Room (which unfollows); a redaction (of a chat message, or of
@@ -41,6 +44,10 @@ from bridge.repost_cards import maybe_publish_repost_card
 from bridge.commands import bot_mxid, is_bot_user, maybe_handle_command, notice
 from bridge.danger import maybe_handle_confirmation
 from bridge.edit_bridge import maybe_publish_edit
+from bridge.encrypted_media import done_handling as encrypted_media_done
+from bridge.encrypted_media import handling as encrypted_media_handling
+from bridge.encrypted_media import maybe_handle_encrypted_media
+from bridge.encrypted_media import resolve as resolve_encrypted_media
 from bridge.interactions import maybe_handle_reaction, maybe_publish_reply
 from bridge.membership import maybe_handle_join, maybe_handle_knock, maybe_handle_leave
 from bridge.profile_posts import maybe_handle_profile_room_state, maybe_handle_redaction, maybe_publish_profile_post
@@ -112,9 +119,24 @@ async def maybe_accept_invite(request: Request, event: dict) -> bool:
     return True
 
 
+async def handle_event(request: Request, event: dict[str, Any]) -> None:
+    """Handle one event: an encrypted file already decrypted once is swapped
+    for its plaintext copy first (see ``bridge.encrypted_media``)."""
+    event = await resolve_encrypted_media(request, event)
+    token = encrypted_media_handling(event)
+    try:
+        await _handle_event(request, event)
+    finally:
+        encrypted_media_done(token)
+
+
 async def _handle_event(request: Request, event: dict[str, Any]) -> None:
     """Give ``event`` to the first handler that claims it."""
     if await maybe_accept_invite(request, event):
+        return
+    # Before anything that could publish or answer it: a confirmation of an
+    # encrypted file's prompt, or another bridge's decrypted copy of one.
+    if await maybe_handle_encrypted_media(request, event):
         return
     if await maybe_start_chat_from_invite(request, event):
         return
@@ -172,7 +194,7 @@ async def _handle_transaction(
             logger.debug("Ignoring already-processed event %s in transaction %s", event_id, txn_id)
             continue
         try:
-            await _handle_event(request, event)
+            await handle_event(request, event)
         except Exception:
             logger.exception(
                 "Error handling event %s (%s) in %s", event_id, event.get("type"), event.get("room_id")

@@ -42,6 +42,7 @@ from bridge.matrix_records import (
     rich_post_parts,
     social_reply_relation,
 )
+from bridge.encrypted_media import encrypted_file, hold
 from bridge.media import VIDEO_MAX_BYTES, VIDEO_MIME_TYPE, format_size, prepare_image
 from bridge.msc4501 import PROFILE_BANNER_STATE_TYPE
 from bridge.pds import PdsError, Write
@@ -91,6 +92,11 @@ async def _build_embed(
     content = event.get("content") or {}
     mxc = content.get("url")
     if not isinstance(mxc, str) or "file" in content:
+        if not native_only and encrypted_file(content) is not None:
+            # Waits for a decrypted copy, asked for once for every bridge
+            # (or by a bridge before this one): said nothing about here.
+            hold(request.app)
+            return None
         await refuse("That attachment is encrypted, so I can't publish it.")
         return None
     try:

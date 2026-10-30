@@ -285,6 +285,20 @@ class LoggingSection:
 
 
 @dataclass(frozen=True)
+class EncryptedMediaSection:
+    """Sharing one decrypted copy of an encrypted attachment with the other
+    bridges on this server (see ``bridge.encrypted_media``)."""
+
+    # Bot MXIDs of the bridges on this server that share decrypted copies,
+    # in the order they ask for confirmation. Include this bridge. Empty:
+    # this bridge works alone.
+    bridges: tuple[str, ...] = ()
+    # How long each bridge waits, per place in that order, for the ones
+    # before it to ask first.
+    wait_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     bridge: BridgeSection
     synapse: SynapseSection
@@ -293,6 +307,7 @@ class BridgeConfig:
     handles: HandlesSection
     atproto: AtprotoSection
     logging: LoggingSection
+    encrypted_media: EncryptedMediaSection = field(default_factory=EncryptedMediaSection)
 
 
 def _require(section: dict[str, Any], key: str, section_name: str) -> Any:
@@ -485,6 +500,19 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
     logging_raw = raw.get("logging", {}) or {}
     logging_section = LoggingSection(level=logging_raw.get("level", "INFO"))
 
+    encrypted_raw = raw.get("encrypted_media", {}) or {}
+    sharing_bridges = _string_list(encrypted_raw, "bridges", "encrypted_media")
+    for mxid in sharing_bridges:
+        if not re.fullmatch(r"@[^:\s]+:\S+", mxid):
+            raise ConfigError(f"encrypted_media.bridges: {mxid!r} is not a Matrix user ID like @bot:example.org")
+    try:
+        wait_seconds = float(encrypted_raw.get("wait_seconds", 5))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("encrypted_media.wait_seconds must be a number") from exc
+    if wait_seconds < 0:
+        raise ConfigError("encrypted_media.wait_seconds must not be negative")
+    encrypted_media_section = EncryptedMediaSection(bridges=tuple(sharing_bridges), wait_seconds=wait_seconds)
+
     return BridgeConfig(
         bridge=bridge_section,
         synapse=synapse_section,
@@ -493,4 +521,5 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BridgeConfig:
         handles=handles_section,
         atproto=atproto_section,
         logging=logging_section,
+        encrypted_media=encrypted_media_section,
     )

@@ -306,6 +306,21 @@ class SynapseClient:
                 return None
             raise
 
+    async def get_relations(
+        self, room_id: str, event_id: str, rel_type: str, *, as_user_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """The events relating to ``event_id`` with ``rel_type`` (the first
+        page, newest first): the spec's relations endpoint, not anything
+        Synapse-only."""
+        result = await self._request(
+            "GET",
+            f"/_matrix/client/v1/rooms/{room_id}/relations/{quote(event_id, safe='')}/{quote(rel_type, safe='')}",
+            params={"limit": str(limit)},
+            as_user_id=as_user_id,
+        )
+        chunk = (result or {}).get("chunk")
+        return chunk if isinstance(chunk, list) else []
+
     async def upload_media(self, data: bytes, content_type: str, filename: str, *, as_user_id: str) -> str:
         """Upload to the homeserver's media repository. Returns the ``mxc://`` URI."""
         response = await self._client.post(

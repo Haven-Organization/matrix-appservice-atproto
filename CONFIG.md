@@ -29,6 +29,7 @@ The bridge reads `config.yaml` once, at startup, so restart it after a change. T
   - [Mirroring](#mirroring)
   - [Notifications](#notifications)
   - [Chat](#chat)
+- [`encrypted_media`](#encrypted_media)
 
 ---
 
@@ -373,3 +374,21 @@ How often each account's chats are checked for new messages. `0` turns chat off 
 **Default:** `following`. One of `all`, `following`, `none`.
 
 Who may start a chat with a local account: anyone, only accounts it follows (Bluesky's own default), or nobody. Published as each account's chat declaration.
+
+## `encrypted_media`
+
+An image or video forwarded out of an end-to-end encrypted room often keeps its file encrypted. Publishing it takes a decrypted copy on the homeserver, which the sender is asked to confirm (reply "confirm", or react 👍 in any skin tone). Several bridges on one server can share that prompt and that copy, so the sender is asked once and the file is decrypted once.
+
+#### `encrypted_media.bridges`
+
+**Default:** `[]` (this bridge works alone)
+
+The bot MXIDs of the bridges that share decrypted copies, in the order they ask. Include this bridge's own bot. The first bridge in the list that wants to publish the post asks; each later one waits [`wait_seconds`](#encrypted_mediawait_seconds) per place in the list, then asks only if no bridge before it has asked or announced a copy. The bridge that asked decrypts the file, uploads it once, and announces it to the others with a `software.haven.decrypted_media` event related to the post (a type clients don't show). The others check the copy is exactly the sender's file (re-encrypting it with the key in the message must give the encrypted file's hash) before using it, so no bridge has to trust another.
+
+Give every bridge the same list, e.g. `["@fediverse:example.org", "@bluesky:example.org", "@nostr:example.org"]`.
+
+#### `encrypted_media.wait_seconds`
+
+**Default:** `5`
+
+How long each bridge waits, per place in [`bridges`](#encrypted_mediabridges), for the ones before it to ask first.

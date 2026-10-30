@@ -113,3 +113,10 @@ handles:
 
 logging:
   level: INFO
+
+# Bridges on this server that share one decrypted copy of an encrypted
+# attachment (and one confirmation prompt), in the order they ask. Include
+# this bridge. Left empty, this bridge asks and decrypts on its own. See
+# CONFIG.md.
+# encrypted_media:
+#   bridges: ["@fediverse:example.org", "@bluesky:example.org", "@nostr:example.org"]
