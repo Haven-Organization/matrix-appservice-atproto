@@ -430,7 +430,39 @@ async def handle_announce(app: FastAPI, announce: dict) -> None:
             logger.warning("Ignoring %s's copy of %s: it isn't the sender's file", announce.get("sender"), file["url"])
             return
         await _remember(app, file, plain)
+    if await _published(app, post_id):
+        return  # announced twice, or seen both live and on looking back
     await _replay(app, post)
+    if await _published(app, post_id):
+        await _sent_after_sibling(app, room_id, post_id)
+
+
+async def _published(app: FastAPI, post_id: str) -> bool:
+    """Whether the Matrix event became a Bluesky post or a chat message."""
+    repository = app.state.repository
+    return bool(await repository.get_records_for_event(post_id)) or bool(
+        await repository.get_chat_message_for_event(post_id))
+
+
+async def _sent_after_sibling(app: FastAPI, room_id: str, post_id: str) -> None:
+    """Published with a copy another bridge made after its question was
+    answered: say so too, under that question, so each bridge's outcome
+    shows. A file that was simply known already (nobody asked) stays quiet,
+    as it does at the bridge that made the copy."""
+    bot = bot_mxid(app.state.config)
+    prompt = next((e for e in await _related(app, room_id, post_id)
+                   if e.get("sender") != bot and e.get("type") == "m.room.message" and _is_prompt(e, post_id)), None)
+    if prompt is None:
+        return
+    content = {
+        "msgtype": "m.notice", "body": "✅ Sent.",
+        "m.relates_to": {"rel_type": "m.thread", "event_id": post_id, "is_falling_back": True,
+                         "m.in_reply_to": {"event_id": prompt["event_id"]}},
+    }
+    try:
+        await app.state.synapse.send_message_event(room_id, content, as_user_id=bot)
+    except SynapseError:
+        logger.warning("Could not send a notice to %s", room_id, exc_info=True)
 
 
 async def _is_exact_copy(app: FastAPI, file: dict, plain: str) -> bool:

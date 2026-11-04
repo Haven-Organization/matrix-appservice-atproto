@@ -85,6 +85,13 @@ class FakeSynapse:
 class FakeRepository:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.posted: set[str] = set()  # Matrix events that became posts
+
+    async def get_records_for_event(self, event_id):
+        return ["record"] if event_id in self.posted else []
+
+    async def get_chat_message_for_event(self, event_id):
+        return None
 
     async def get_value(self, key):
         return self.values.get(key)
@@ -109,6 +116,7 @@ def bridge(monkeypatch):
         if await encrypted_media.maybe_handle_encrypted_media(request, event):
             return
         handled.append(event)
+        app.state.repository.posted.add(event["event_id"])
 
     # The encrypted media hook runs as in the real chain; what the usual
     # handlers would do after it is theirs to test: here, just what they
@@ -389,3 +397,26 @@ def test_config(tmp_path) -> None:
     path.write_text(base + "encrypted_media: {bridges: [fediverse]}\n")
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_a_copy_after_another_bridges_prompt_says_sent_once(bridge) -> None:
+    _listing(bridge, AP, US)
+    post = _post(bridge)
+    prompt = bridge.synapse.store(ROOM, "m.room.message", {
+        "msgtype": "m.text", "body": "⚠️Alice, this message is encrypted. ...", PROMPT_FIELD: {"prompt_for": post["event_id"]},
+        "m.relates_to": {"rel_type": "m.thread", "event_id": post["event_id"], "is_falling_back": True}}, AP)
+    announce = _announce(bridge, post, PLAIN)
+    _run(_event(bridge, announce))
+    _run(_event(bridge, announce))  # again: already posted, nothing more
+    assert len(bridge.handled) == 1
+    [sent] = bridge.synapse.sent()
+    assert sent["content"]["body"] == "✅ Sent."
+    assert sent["content"]["m.relates_to"]["event_id"] == post["event_id"]
+    assert sent["content"]["m.relates_to"]["m.in_reply_to"] == {"event_id": prompt["event_id"]}
+
+
+def test_a_copy_nobody_asked_about_is_posted_quietly(bridge) -> None:
+    _listing(bridge, AP, US)
+    post = _post(bridge)
+    _run(_event(bridge, _announce(bridge, post, PLAIN)))
+    assert len(bridge.handled) == 1 and bridge.synapse.sent() == []
